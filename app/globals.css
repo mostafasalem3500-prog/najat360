@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #f8f5f5;
+  color: #241010;
+}
+
+/* Every screen must make synthetic/demo data visually unmistakable —
+   see docs' "بيانات Demo موسومة بوضوح" requirement, restated in
+   src/lib/demo-mode.ts's header comment for the same principle applied
+   to demo-only affordances. */
+.synthetic-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background-color: #fde8ea;
+  color: #990011;
+  border: 1px solid #f3c6cb;
+}
+
+.card {
+  background: white;
+  border-radius: 0.75rem;
+  border: 1px solid #eee0e1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}

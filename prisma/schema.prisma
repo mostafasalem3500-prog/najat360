@@ -1,0 +1,713 @@
+// NAJAT360 Companion — C1 schema slice.
+// Scope: golden path only (NEW -> CLOSED), RBAC, state machine, Assisted Intake drafts,
+// FieldLink device heartbeat, audit log, synthetic CAD provider read models.
+// Deliberately deferred to later migrations (see docs/product/NAJAT360-قرارات-ما-بعد-C0.md):
+//   RouteSnapshot/Recommendation breakdown fields, H3Prediction, Hospital*, DestinationRecommendation,
+//   Abort reason taxonomy, OperationalAlert, ReplayRun.
+// EVERY row created by our own code MUST set synthetic = true. There is no production data source.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  CALLER
+  CALL_TAKER
+  SUPERVISOR
+  MEDIC
+  RESPONSE_COORDINATOR
+  HOSPITAL_LIAISON
+  ANALYST
+  ADMIN
+}
+
+/// Actor type recorded on events/audit rows. Mirrors Role plus SYSTEM for
+/// automated transitions (e.g. provider timeout, stale connectivity).
+enum ActorType {
+  CALLER
+  CALL_TAKER
+  SUPERVISOR
+  MEDIC
+  RESPONSE_COORDINATOR
+  HOSPITAL_LIAISON
+  ANALYST
+  ADMIN
+  SYSTEM
+}
+
+enum IncidentStatus {
+  NEW
+  VERIFYING
+  READY_FOR_DECISION
+  DISPATCHED
+  EN_ROUTE
+  AT_ACCESS_POINT
+  ON_SCENE
+  CLOSED
+  // exceptional states
+  LOW_CONFIDENCE
+  NO_UNIT_AVAILABLE
+  ACCESS_BLOCKED
+  DUPLICATE_SUSPECTED
+  CANCELLED_BY_OPERATOR
+  LOST_CONNECTIVITY
+}
+
+enum Priority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum PlaceType {
+  RESIDENTIAL
+  COMMERCIAL
+  OUTDOOR_PUBLIC
+  RELIGIOUS_SITE
+  TRANSPORT_HUB
+  EVENT_VENUE
+  OTHER
+}
+
+enum CrewType {
+  AMBULANCE
+  RAPID_RESPONSE
+  FOOT_TEAM
+}
+
+enum UnitStatus {
+  AVAILABLE
+  BUSY
+  OUT_OF_SERVICE
+}
+
+enum EntranceAccessType {
+  ROAD
+  PEDESTRIAN
+  SERVICE
+}
+
+enum ValidationStatus {
+  UNVERIFIED
+  MANUALLY_REVIEWED
+  FIELD_CONFIRMED
+}
+
+enum IncidentEventType {
+  CREATED
+  LOCATION_UPDATED
+  PRIORITY_PROPOSED
+  PRIORITY_APPROVED
+  UNIT_ASSIGNED
+  RECOMMENDATION_OVERRIDDEN
+  STATUS_TRANSITION
+  EN_ROUTE
+  AT_ACCESS_POINT
+  ON_SCENE
+  DELAY_ALERT
+  ACCESS_BLOCKED
+  SUGGESTION_ACCEPTED
+  SUGGESTION_EDITED
+  SUGGESTION_REJECTED
+  SUGGESTION_REJECTED_INVALID_FIELD
+  CLOSED
+}
+
+enum CaptureSourceType {
+  TEXT
+  AUDIO_TRANSCRIPT
+}
+
+enum DraftStatus {
+  DRAFT
+  PARTIALLY_CONFIRMED
+  CONFIRMED
+  REJECTED
+}
+
+enum SuggestionStatus {
+  PENDING
+  ACCEPTED
+  EDITED
+  REJECTED
+}
+
+/// spec 29.2 — LocationObservation.source. Priority ranking used by
+/// lib/location/resolver.ts to pick the "primary" observation among
+/// several is this project's OWN choice (spec does not mandate one),
+/// documented in that module: ANCHOR_QR ranks highest because it is a
+/// server-verified physical point, not a raw device reading.
+enum LocationObservationSource {
+  BROWSER_GPS
+  MANUAL_PIN
+  ANCHOR_QR
+  LANDMARK
+  NATIONAL_ADDRESS
+  WHAT3WORDS_OPTIONAL
+  CALL_TAKER
+}
+
+/// spec 29.1 — LocationAnchor.anchorType.
+enum AnchorType {
+  ENTRANCE
+  FLOOR
+  ZONE
+}
+
+enum Connectivity {
+  ONLINE
+  DEGRADED
+  STALE
+  OUT_OF_REACH
+}
+
+/// spec 16 rule #4's "badge" — where a RouteSnapshot's numbers actually came
+/// from. Written onto every row so nothing downstream can mistake a
+/// simulated ETA for a live one. Mirrors
+/// lib/routing/provider.ts's RoutingProviderMode exactly. Only MOCK is
+/// reachable until a real provider is built (deferred past C4 — see
+/// lib/routing/provider.ts's header comment).
+enum RoutingProviderMode {
+  MOCK
+  LIVE
+  FALLBACK
+}
+
+/// spec 30.5 — FieldLink's fixed action list. Deliberately excludes
+/// START_TRANSPORT/START_HANDOVER/END_HANDOVER (hospital-handover, C8) —
+/// see lib/domain/types.ts's FIELD_ACTION_TYPES doc comment.
+enum FieldActionType {
+  ACCEPT_TASK
+  START_MOVING
+  AT_ACCESS_POINT
+  ON_SCENE
+  ACCESS_BLOCKED
+  REQUEST_LOCATION_REFRESH
+  PROPOSE_ALTERNATE_ENTRANCE
+  CLOSE_TASK
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role
+  scopeZone    String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  reviewedSuggestions ExtractedFieldSuggestion[] @relation("SuggestionReviewer")
+  auditLogs           AuditLog[]
+  incidentEvents      IncidentEvent[]
+  acceptedRecommendations Recommendation[] @relation("RecommendationAcceptedBy")
+  fieldActions         FieldAction[]
+
+  @@index([role])
+}
+
+model Incident {
+  id                    String         @id @default(uuid())
+  rescueCode            String         @unique
+  callerTokenHash       String         @unique
+  callerTokenExpiresAt  DateTime
+  status                IncidentStatus @default(NEW)
+  priority              Priority?
+  proposedPriority      Priority?
+  latitude              Decimal        @db.Decimal(9, 6)
+  longitude             Decimal        @db.Decimal(9, 6)
+  gpsAccuracyMeters      Float?
+  locationCapturedAt     DateTime?
+  uncertaintyRadiusMeters Float?
+  confidenceScore        Int?
+  confidenceVersion      String?
+  placeType              PlaceType?
+  floorLevel             String?
+  language               String         @default("ar")
+  unableToSpeak          Boolean        @default(false)
+  /// Callback contact captured during intake so a call-taker/coordinator can
+  /// follow up while a unit is en route. Deliberately NOT visible to every
+  /// role — see lib/auth/rbac.ts (HOSPITAL_LIAISON/ANALYST/ADMIN/MEDIC must
+  /// never receive these; spec acceptance test 30.14 #8).
+  callerName             String?
+  callerPhone            String?
+  description            String?
+  /// The remaining ALLOWLIST fields from lib/assisted-capture/allowlist.ts
+  /// (section 30 caller-observation fields an AI draft may suggest). Added
+  /// after comparing against a second independent C1 attempt (ChatGPT) that
+  /// correctly flagged these were on the allowlist with nowhere to land —
+  /// see lib/assisted-capture/field-mapping.ts for the AI-field-name ->
+  /// column mapping (most are 1:1; preferredLanguage maps to `language`
+  /// above, not a separate column).
+  reportedPatientCount      Int?
+  entranceOrGateHint        String?
+  landmarkText              String?
+  accessObstacle            String?
+  sceneHazardReported       String?
+  preferredCommunicationMode String?
+  h3Index                String?
+  suggestedEntranceId    String?
+  assignedEntranceId     String?
+  assignedUnitId         String?
+  /// Denormalized copy of the cancellation reason, persisted directly on
+  /// Incident (in addition to the IncidentEvent row that also records it)
+  /// so a DB-level CHECK constraint can enforce "CANCELLED_BY_OPERATOR
+  /// always has a reason" without joining IncidentEvent — see
+  /// prisma/migrations/0001_init/migration.sql's
+  /// Incident_cancel_requires_reason constraint (defense-in-depth
+  /// alongside lib/incidents/state-machine.ts's MissingOverrideReasonError;
+  /// idea credited to comparing against a second independent C1 attempt —
+  /// see docs/product/NAJAT360-قرارات-ما-بعد-C0.md). Not expressible as a
+  /// `@@check` in this schema.prisma (avoided earlier in C1 as an
+  /// uncertain/preview-only feature) — the constraint exists only in the
+  /// raw migration SQL, per the build prompt's own raw-SQL-fallback rule.
+  cancellationOverrideReason String?
+  /// See lib/incidents/state-machine.ts's ConnectivityRecoveryMismatchError:
+  /// recorded when entering LOST_CONNECTIVITY, required to match on the way
+  /// back out, cleared to null on successful recovery.
+  statusBeforeConnectivityLoss IncidentStatus?
+  synthetic              Boolean        @default(true)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  closedAt               DateTime?
+
+  assignedEntrance Entrance?     @relation("AssignedEntrance", fields: [assignedEntranceId], references: [id])
+  suggestedEntrance Entrance?    @relation("SuggestedEntrance", fields: [suggestedEntranceId], references: [id])
+  assignedUnit     AmbulanceUnit? @relation(fields: [assignedUnitId], references: [id])
+
+  events           IncidentEvent[]
+  captureDrafts    AssistedCaptureDraft[]
+  locationObservations LocationObservation[]
+  locationResolutions  LocationResolution[]
+  routeSnapshots       RouteSnapshot[]
+  recommendations      Recommendation[]
+  fieldActions         FieldAction[]
+
+  @@index([status, priority, createdAt])
+  // A unit may only be actively assigned to one non-terminal incident at a
+  // time. This is a PARTIAL unique index (WHERE assignedUnitId IS NOT NULL
+  // AND status NOT IN (CANCELLED_BY_OPERATOR, CLOSED)) — not expressible in
+  // Prisma's stable schema syntax, so it exists only in the raw migration
+  // SQL as Incident_one_active_assignment_per_unit. Prevents the exact
+  // double-booking race a concurrent dispatch decision could otherwise
+  // cause; credited to the same comparison as the constraint above.
+}
+
+model IncidentEvent {
+  id             String            @id @default(uuid())
+  incidentId     String
+  actorType      ActorType
+  actorId        String?
+  eventType      IncidentEventType
+  previousStatus IncidentStatus?
+  nextStatus     IncidentStatus?
+  latitude       Decimal?          @db.Decimal(9, 6)
+  longitude      Decimal?          @db.Decimal(9, 6)
+  overrideReason String?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  actor    User?    @relation(fields: [actorId], references: [id])
+
+  @@index([incidentId, createdAt])
+}
+
+model AmbulanceUnit {
+  id                          String     @id @default(uuid())
+  code                        String     @unique
+  label                       String
+  crewType                    CrewType
+  status                      UnitStatus @default(AVAILABLE)
+  readinessScore              Int        @default(100)
+  homeZone                    String
+  estimatedAvailabilityMinutes Int?
+  synthetic                   Boolean    @default(true)
+  createdAt                   DateTime   @default(now())
+  updatedAt                   DateTime   @updatedAt
+
+  incidents Incident[]
+  locations UnitLocation[]
+  heartbeats DeviceHeartbeat[]
+  routeSnapshots RouteSnapshot[]
+  fieldActions FieldAction[]
+}
+
+model UnitLocation {
+  id             String   @id @default(uuid())
+  unitId         String
+  latitude       Decimal  @db.Decimal(9, 6)
+  longitude      Decimal  @db.Decimal(9, 6)
+  accuracyMeters Float?
+  heading        Float?
+  speed          Float?
+  capturedAt     DateTime @default(now())
+  synthetic      Boolean  @default(true)
+
+  unit AmbulanceUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@index([unitId, capturedAt])
+}
+
+model Entrance {
+  id                  String             @id @default(uuid())
+  code                String             @unique
+  nameAr              String
+  nameEn              String
+  latitude            Decimal            @db.Decimal(9, 6)
+  longitude           Decimal            @db.Decimal(9, 6)
+  zone                String
+  accessType          EntranceAccessType
+  vehicleAccessible   Boolean            @default(true)
+  pedestrianAccessible Boolean           @default(true)
+  active              Boolean            @default(true)
+  validationStatus    ValidationStatus   @default(UNVERIFIED)
+  lastValidatedAt     DateTime?
+  synthetic           Boolean            @default(true)
+
+  /// C3 / spec 29.3 "آخر 100 متر والطابق" — data fields only, no
+  /// route-computation logic this phase (see domain/types.ts's Entrance
+  /// doc comment for the full rationale).
+  vehicleStopLatitude    Decimal? @db.Decimal(9, 6)
+  vehicleStopLongitude   Decimal? @db.Decimal(9, 6)
+  pedestrianPathGeoJson  String?
+  floorLevel             String?
+  hasStairs              Boolean  @default(false)
+  hasElevator            Boolean  @default(false)
+  accessibilityNotes     String?
+  isServiceGate          Boolean  @default(false)
+  temporaryRestriction   String?
+  lastValidatedBySource  String?
+
+  assignedToIncidents  Incident[] @relation("AssignedEntrance")
+  suggestedToIncidents Incident[] @relation("SuggestedEntrance")
+  anchors              LocationAnchor[]
+  routeSnapshots       RouteSnapshot[]
+}
+
+/// spec 29.1 "Rescue Anchors" — a pre-registered QR/NFC physical point.
+/// `code` is the only anchor-identifying value a client may ever supply;
+/// every other field is looked up here server-side (see
+/// lib/location/anchor-resolution.ts). validFrom/validUntil let a demo (or
+/// a real deployment) retire an anchor without deleting its history.
+model LocationAnchor {
+  id               String           @id @default(uuid())
+  code             String           @unique
+  entranceId       String
+  floorLevel       String?
+  latitude         Decimal          @db.Decimal(9, 6)
+  longitude        Decimal          @db.Decimal(9, 6)
+  anchorType       AnchorType
+  validationStatus ValidationStatus @default(UNVERIFIED)
+  validFrom        DateTime         @default(now())
+  validUntil       DateTime?
+  active           Boolean          @default(true)
+  synthetic        Boolean          @default(true)
+
+  entrance Entrance @relation(fields: [entranceId], references: [id])
+
+  @@index([entranceId])
+}
+
+/// spec 29.2 — one raw location signal for an incident. APPEND-ONLY: no
+/// code path in this project updates or deletes a row here, and the raw
+/// migration additionally installs a BEFORE UPDATE OR DELETE trigger that
+/// raises an exception, so the rule holds even against a future bug or an
+/// ad-hoc `UPDATE` someone runs by hand. (Trigger-based append-only
+/// enforcement — stronger than a CHECK constraint for this specific rule —
+/// credited to comparing against a third independent AI attempt at this
+/// same phase; see docs/product for the comparison notes.) Not expressible
+/// as a trigger in Prisma's stable schema syntax, so — same pattern as the
+/// C1 CHECK constraints — it exists only in the raw migration SQL.
+model LocationObservation {
+  id                        String                    @id @default(uuid())
+  incidentId                String
+  source                    LocationObservationSource
+  latitude                  Decimal                   @db.Decimal(9, 6)
+  longitude                 Decimal                   @db.Decimal(9, 6)
+  horizontalAccuracyMeters  Float?
+  verticalAccuracyMeters    Float?
+  floorLevel                String?
+  capturedAt                DateTime
+  provenanceLabel           String
+  metadata                  Json                      @default("{}")
+  synthetic                 Boolean                   @default(true)
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId, capturedAt])
+}
+
+/// spec 29.2 — a resolved best-estimate location snapshot. Also
+/// append-only (see LocationObservation's doc comment — same trigger
+/// pattern applies here): a new resolution is always a new row, so the
+/// full history of how an incident's location understanding evolved stays
+/// queryable, never overwritten.
+model LocationResolution {
+  id                        String   @id @default(uuid())
+  incidentId                String
+  latitude                  Decimal  @db.Decimal(9, 6)
+  longitude                 Decimal  @db.Decimal(9, 6)
+  uncertaintyRadiusMeters   Float
+  confidenceIndex           Int
+  primaryObservationId      String
+  supportingObservationIds  Json     @default("[]")
+  conflictingObservationIds Json     @default("[]")
+  selectedEntranceId        String?
+  floorLevel                String?
+  algorithmVersion          String
+  resolvedById               String?
+  createdAt                  DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@index([incidentId, createdAt])
+}
+
+/// A single AI-assisted capture session for one incident. Holds translation
+/// output only; never the source of truth for the incident itself.
+model AssistedCaptureDraft {
+  id             String            @id @default(uuid())
+  incidentId     String
+  sourceType     CaptureSourceType
+  sourceLanguage String
+  targetLanguage String
+  translatedText String?
+  provider       String
+  modelVersion   String
+  status         DraftStatus       @default(DRAFT)
+  synthetic      Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  expiresAt      DateTime
+
+  incident    Incident                   @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  suggestions ExtractedFieldSuggestion[]
+
+  @@index([incidentId])
+}
+
+/// One proposed field value from an AI provider. `fieldName` is constrained at
+/// the application layer (Zod enum, see lib/assisted-capture/allowlist.ts) to
+/// the intake allowlist — never a dispatch/priority/diagnosis field. This
+/// table is the ONLY place an AI-origin value may land before human review;
+/// nothing here is copied to Incident automatically.
+model ExtractedFieldSuggestion {
+  id                String            @id @default(uuid())
+  draftId           String
+  fieldName         String
+  suggestedValue     Json
+  evidenceTextMasked String?
+  confidence         Float
+  status             SuggestionStatus @default(PENDING)
+  finalValue         Json?
+  reviewedById        String?
+  reviewedAt          DateTime?
+  createdAt           DateTime         @default(now())
+
+  draft      AssistedCaptureDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  reviewedBy User?                @relation("SuggestionReviewer", fields: [reviewedById], references: [id])
+
+  @@index([draftId, status])
+}
+
+/// FieldLink connectivity/battery signal for a unit's field device. Full
+/// alerting dashboard is deferred to C9; the table exists now because
+/// FieldLink (C5) needs somewhere to record heartbeats from day one.
+model DeviceHeartbeat {
+  id            String       @id @default(uuid())
+  unitId        String
+  deviceIdHash  String
+  connectivity  Connectivity
+  batteryLevel  Int?
+  capturedAt    DateTime     @default(now())
+  synthetic     Boolean      @default(true)
+
+  unit AmbulanceUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@index([unitId, capturedAt])
+}
+
+/// spec 30.5 — one processed FieldLink action. APPEND-ONLY (same
+/// trigger-enforced pattern as C3's LocationObservation/LocationResolution
+/// — see prisma/migrations/0004_c5_fieldlink): a field action log is a
+/// historical record, never edited in place. `idempotencyKey` carries a
+/// real DB-level UNIQUE constraint — the second, defense-in-depth half of
+/// spec 30.14 #6's "offline action resubmitted once thanks to
+/// idempotency" guarantee, alongside the app-layer check in
+/// lib/fieldlink/field-action.ts's submitFieldAction().
+model FieldAction {
+  id               String          @id @default(uuid())
+  incidentId       String
+  unitId           String
+  actorId          String
+  actionType       FieldActionType
+  idempotencyKey   String          @unique
+  payload          Json?
+  previousStatus   IncidentStatus?
+  resultingStatus  IncidentStatus?
+  submittedAt      DateTime
+  processedAt      DateTime        @default(now())
+  synthetic        Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+
+  incident Incident      @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  unit     AmbulanceUnit @relation(fields: [unitId], references: [id])
+  actor    User          @relation(fields: [actorId], references: [id])
+
+  @@index([incidentId, createdAt])
+  @@index([incidentId, actionType])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId, createdAt])
+}
+
+/// spec 15/16's ERD — one candidate unit/entrance pair's computed route, as
+/// evaluated by lib/dispatch/generate-recommendation.ts. A full
+/// generateRecommendation() call persists one row per (unit, entrance)
+/// candidate it considered, not just the winner, so the full
+/// cross-product a supervisor's decision was based on stays auditable.
+model RouteSnapshot {
+  id              String              @id @default(uuid())
+  incidentId      String
+  unitId          String
+  entranceId      String
+  provider        String
+  /// spec 16 rule #4's "badge" — see enum doc comment above.
+  providerMode    RoutingProviderMode
+  distanceMeters  Float
+  durationSeconds Float
+  /// JSON envelope combining the VEHICLE leg's geometry and, if present, a
+  /// PEDESTRIAN "last 100 meters" leg (spec 29.3):
+  /// {"vehicle": <GeoJSON LineString>, "pedestrian": <GeoJSON LineString> | null}.
+  /// Spec's ERD lists a single `geometry` field; this project keeps that
+  /// one column but stores both legs rather than picking one and silently
+  /// dropping the other — see
+  /// lib/dispatch/generate-recommendation.ts's UnitEntranceRoute.
+  geometry        Json
+  dataFreshnessAt DateTime
+  synthetic       Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+
+  incident Incident      @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  unit     AmbulanceUnit @relation(fields: [unitId], references: [id])
+  entrance Entrance      @relation(fields: [entranceId], references: [id])
+
+  @@index([incidentId, createdAt])
+}
+
+/// spec 15's "recommendation card" + acceptance/override outcome. Unlike
+/// LocationObservation/LocationResolution (C3, append-only by trigger),
+/// this table is DELIBERATELY MUTABLE: spec's own field design
+/// (acceptedById/acceptedAt/rejectedAt) is a single row updated in place
+/// when a supervisor decides, not a new row per decision — there is
+/// exactly one Recommendation per generateRecommendation() call, and
+/// lib/dispatch/decision.ts's decideDispatch() output is what updates it.
+///
+/// recommendedUnitId/alternativeUnitId/recommendedEntranceId/alternativeEntranceId
+/// are intentionally plain (non-relational) string columns rather than four
+/// separate named Prisma relations into AmbulanceUnit/Entrance — spec's ERD
+/// lists them as reference ids, not first-class relation objects, and four
+/// distinct named relations (mirroring Incident's AssignedEntrance/
+/// SuggestedEntrance pattern, doubled) would add schema noise disproportionate
+/// to what this phase needs. Referential integrity for these four columns is
+/// still enforced at the DB layer via plain (non-Prisma-modeled) FOREIGN KEY
+/// constraints added directly in this migration's raw SQL — same
+/// raw-SQL-only pattern already used for
+/// Incident_one_active_assignment_per_unit and
+/// Incident_cancel_requires_reason.
+model Recommendation {
+  id                    String    @id @default(uuid())
+  incidentId            String
+  algorithmVersion      String
+  recommendedUnitId     String
+  alternativeUnitId     String?
+  recommendedEntranceId String
+  alternativeEntranceId String?
+  /// The winning candidate's OVERALL score under whichever formula
+  /// `algorithmVersion` names — `access-score-v1` (C4, spec 15) or
+  /// `dispatch-score-v1` (C6, spec 29.4). Reused rather than adding a
+  /// second `dispatchScore` column: both are "the one number a supervisor
+  /// sees for the top pick", `algorithmVersion` already disambiguates
+  /// which formula produced it, and every consumer of this column already
+  /// reads `algorithmVersion` alongside it (see
+  /// lib/dispatch/generate-coverage-recommendation.ts's `dispatchScore`
+  /// output, mapped into this same column by the seed/repository layer).
+  accessScore           Int
+  confidenceScore       Int
+  /// Machine-readable reasoning tags — see
+  /// lib/dispatch/generate-recommendation.ts's `reasoning` output (C4) or
+  /// lib/dispatch/generate-coverage-recommendation.ts's `reasoning` output
+  /// (C6, includes COVERAGE_BEFORE/COVERAGE_AFTER tags).
+  reasoning             Json
+  /// Per-component score breakdown for the recommended pair — see
+  /// lib/dispatch/access-score.ts's AccessScoreResult.breakdown (C4) or
+  /// lib/dispatch/dispatch-score.ts's DispatchScoreResult.breakdown (C6).
+  /// Not itself a field name spec's ERD lists by name, but the natural row
+  /// for a value spec explicitly requires be persisted somewhere.
+  scoreBreakdown        Json
+  acceptedById          String?
+  acceptedAt            DateTime?
+  rejectedAt            DateTime?
+  overrideReason        String?
+  synthetic             Boolean   @default(true)
+  createdAt             DateTime  @default(now())
+
+  incident   Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  acceptedBy User?    @relation("RecommendationAcceptedBy", fields: [acceptedById], references: [id])
+
+  @@index([incidentId, createdAt])
+}
+
+/// spec 17's H3 demand baseline (C6), spec's own ERD listing. One row per
+/// (H3 cell, 1-hour window) prediction produced by
+/// lib/gis/demand-baseline.ts's `predictH3Demand()` — a genuine
+/// aggregate-and-seasonally-adjust computation over seeded historical
+/// incidents, NOT hand-entered numbers (see that file's header comment for
+/// why this distinction is called out explicitly). No FK to Incident/Unit
+/// — this table describes a GRID CELL's demand over time, independent of
+/// any single incident. Mutable in principle (a later phase could
+/// recompute/refresh predictions), but this phase only ever inserts new
+/// rows, never updates one in place — no append-only trigger either way,
+/// since spec does not call for one here and nothing yet depends on this
+/// table being tamper-evident the way LocationObservation/FieldAction are.
+model H3Prediction {
+  id                String   @id @default(uuid())
+  h3Index           String
+  windowStart       DateTime
+  windowEnd         DateTime
+  historicalDemand  Int
+  predictedDemand   Float
+  lowerBound        Float
+  upperBound        Float
+  recommendedUnits  Int
+  modelVersion      String
+  synthetic         Boolean  @default(true)
+  createdAt         DateTime @default(now())
+
+  @@index([h3Index, windowStart])
+}

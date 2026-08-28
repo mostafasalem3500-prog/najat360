@@ -1,0 +1,51 @@
+{
+  "name": "najat360",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NAJAT360 Companion — C1 foundation (schema, RBAC, state machine, synthetic CAD provider). Not affiliated with or integrated into any real CAD/dispatch system.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev --name init",
+    "prisma:reset": "prisma migrate reset --force",
+    "seed": "tsx scripts/seed-demo.ts",
+    "ci:secret-scan": "tsx scripts/ci-secret-scan.ts",
+    "ci:phase-gate-scan": "tsx scripts/phase-gate-scan.ts",
+    "verify": "npm run typecheck && npm run lint && npm run ci:secret-scan && npm run ci:phase-gate-scan && npm run test"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "h3-js": "^4.5.0",
+    "leaflet": "^1.9.4",
+    "next": "^14.2.35",
+    "pg": "^8.13.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.12",
+    "@types/node": "^22.7.4",
+    "@types/pg": "^8.11.10",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "autoprefixer": "^10.5.4",
+    "eslint": "^8.57.0",
+    "postcss": "^8.5.26",
+    "prisma": "^5.20.0",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}
