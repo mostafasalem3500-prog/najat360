@@ -15,6 +15,7 @@ import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { apiGet, apiPost, ApiError } from '../_lib/api';
 import { onRoleChanged } from '../_lib/role-events';
+import { explainDispatchWarnings } from '@/lib/dispatch/explain';
 import type { MapPoint } from '../_components/IncidentMap';
 
 /** Leaflet touches window/document, so it can only run client-side — see IncidentMap.tsx's header. */
@@ -440,6 +441,12 @@ export default function OperationsPage() {
                         </p>
                       </div>
                     </div>
+
+                    {explainDispatchWarnings(generated.reasoning).map((w, i) => (
+                      <p key={i} className="text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded p-2">
+                        {w}
+                      </p>
+                    ))}
 
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       <div className="border rounded p-2">

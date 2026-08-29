@@ -44,6 +44,18 @@ export interface GenerateCoverageRecommendationInput {
   coverageCells: CoverageCellInput[];
   coverageGapThresholdSeconds?: number;
   routingProvider: RoutingProvider;
+  /**
+   * The H3 demand-baseline prediction for the incident's own cell, when one
+   * exists (see `lib/gis/demand-baseline.ts`) — "عبء المنطقة المتوقع"
+   * (expected area load). Fetched by the caller (repo.ts, which already
+   * does DB work) rather than queried in here, keeping this function pure
+   * and DB-free like the rest of this module. Purely informational: it is
+   * surfaced as an `AREA_DEMAND_HIGH` reasoning tag when the model already
+   * recommends 2+ units for this cell, NOT folded into the numeric score —
+   * same "context for a human decision, not a silent penalty" discipline
+   * as `estimatedAvailabilityMinutes` on `UnitCandidateInput`.
+   */
+  areaDemand?: { predictedDemand: number; recommendedUnits: number } | null;
 }
 
 export interface RankedCoverageCandidate {
@@ -69,6 +81,9 @@ export interface GenerateCoverageRecommendationResult {
   /** Coverage of the grid with the recommended unit removed from the available pool — i.e. "if we dispatch it, what does coverage look like". Falls back to `coverageBefore` itself, with a `SINGLE_UNIT_NO_COMPARISON` reasoning tag, when only one unit is available (there is no meaningful "without this unit" state to compute — `lib/gis/coverage.ts` requires at least one unit to evaluate coverage at all). */
   coverageAfter: CoverageMetrics;
 }
+
+/** A unit within this many minutes of shift end is flagged for supervisor attention rather than silently outranked or silently accepted — see `GenerateCoverageRecommendationInput.areaDemand`'s doc comment for why this is a reasoning tag, not a score term. */
+const SHIFT_ENDING_SOON_MINUTES = 30;
 
 function formatCoverageTag(label: string, metrics: CoverageMetrics): string {
   return `${label}:mean=${metrics.meanEtaSeconds}s,p90=${metrics.p90EtaSeconds}s,worstCell=${metrics.worstCell.h3Index}(${metrics.worstCell.etaSeconds}s),gaps=${metrics.gapCellCount}/${metrics.totalCells},mode=${metrics.mode}`;
@@ -164,6 +179,15 @@ export async function generateCoverageAwareRecommendation(
     );
   }
   if (alternativeEntranceCandidate) reasoning.push(`ALTERNATIVE_ENTRANCE:${alternativeEntranceCandidate.entranceId}`);
+
+  const topUnitAvailability = input.availableUnits.find((u) => u.id === top.unitId)?.estimatedAvailabilityMinutes;
+  if (topUnitAvailability != null && topUnitAvailability <= SHIFT_ENDING_SOON_MINUTES) {
+    reasoning.push(`SHIFT_ENDING_SOON:${topUnitAvailability}min`);
+  }
+
+  if (input.areaDemand && input.areaDemand.recommendedUnits >= 2) {
+    reasoning.push(`AREA_DEMAND_HIGH:predicted=${input.areaDemand.predictedDemand},recommendedUnits=${input.areaDemand.recommendedUnits}`);
+  }
 
   return {
     algorithmVersion: DISPATCH_SCORE_VERSION,

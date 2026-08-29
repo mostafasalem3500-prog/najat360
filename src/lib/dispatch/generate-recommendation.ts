@@ -53,6 +53,16 @@ export interface UnitCandidateInput {
   /** Caller MUST have already filtered this list to AVAILABLE units only — this function does not re-check status (that re-validation belongs at decision time; see `dispatch/decision.ts`). */
   readinessScore: number;
   location: LatLng;
+  /**
+   * Minutes until this unit's shift/duty window ends, when known (`AmbulanceUnit.estimatedAvailabilityMinutes`).
+   * Not folded into the numeric Access/Dispatch Score — this is operational
+   * context a supervisor should see and judge, not a silent penalty a unit
+   * takes without explanation (same "recommend, don't auto-decide"
+   * discipline as the rest of this module). Surfaced instead as a
+   * `SHIFT_ENDING_SOON` reasoning tag by the coverage-aware generator when
+   * the TOP pick is close to shift end — see generate-coverage-recommendation.ts.
+   */
+  estimatedAvailabilityMinutes?: number | null;
 }
 
 export interface EntranceCandidateInput extends LatLng {

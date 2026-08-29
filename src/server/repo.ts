@@ -685,7 +685,7 @@ export async function confirmIncidentLocation(incidentId: string, actorId: strin
 
 async function fetchAvailableUnitsForAssignment(client: PoolClient, excludingIncidentId?: string): Promise<UnitCandidateInput[]> {
   const unitsResult = await client.query(
-    `SELECT u.id, u."readinessScore", ul.latitude, ul.longitude
+    `SELECT u.id, u."readinessScore", u."estimatedAvailabilityMinutes", ul.latitude, ul.longitude
      FROM "AmbulanceUnit" u
      LEFT JOIN LATERAL (
        SELECT latitude, longitude FROM "UnitLocation" WHERE "unitId" = u.id ORDER BY "capturedAt" DESC LIMIT 1
@@ -705,7 +705,34 @@ async function fetchAvailableUnitsForAssignment(client: PoolClient, excludingInc
       id: u.id,
       readinessScore: u.readinessScore,
       location: { latitude: Number(u.latitude), longitude: Number(u.longitude) },
+      estimatedAvailabilityMinutes: u.estimatedAvailabilityMinutes,
     }));
+}
+
+/**
+ * The most relevant H3Prediction row for one cell — "windowStart <= now"
+ * closest to `now` (the current or most recently started prediction
+ * window for that cell), falling back to nothing rather than guessing when
+ * the incident has no h3Index yet (VERIFYING incidents, before the first
+ * location resolution sets it) or the seed never generated a window for
+ * this cell. Feeds `generateCoverageAwareRecommendation()`'s purely
+ * informational `areaDemand` input — see that function's doc comment.
+ */
+async function fetchAreaDemandForCell(
+  client: PoolClient,
+  h3Index: string | null,
+  now: Date
+): Promise<{ predictedDemand: number; recommendedUnits: number } | null> {
+  if (!h3Index) return null;
+  const result = await client.query(
+    `SELECT "predictedDemand", "recommendedUnits" FROM "H3Prediction"
+     WHERE "h3Index" = $1 AND "windowStart" <= $2
+     ORDER BY "windowStart" DESC LIMIT 1`,
+    [h3Index, now]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return { predictedDemand: Number(row.predictedDemand), recommendedUnits: Number(row.recommendedUnits) };
 }
 
 async function fetchCandidateEntrances(client: PoolClient): Promise<EntranceCandidateInput[]> {
@@ -751,15 +778,16 @@ export class NoAvailableUnitsForRecommendationError extends Error {
 export async function generateRecommendationForIncident(incidentId: string, now: Date = new Date()) {
   return withTransaction(async (client) => {
     const incidentResult = await client.query(
-      `SELECT id, status, "confidenceScore", "floorLevel" FROM "Incident" WHERE id = $1 FOR UPDATE`,
+      `SELECT id, status, "confidenceScore", "floorLevel", "h3Index" FROM "Incident" WHERE id = $1 FOR UPDATE`,
       [incidentId]
     );
     const incident = incidentResult.rows[0];
     if (!incident) throw new Error(`generateRecommendationForIncident: no incident "${incidentId}"`);
 
-    const [availableUnits, candidateEntrances] = await Promise.all([
+    const [availableUnits, candidateEntrances, areaDemand] = await Promise.all([
       fetchAvailableUnitsForAssignment(client, incidentId),
       fetchCandidateEntrances(client),
+      fetchAreaDemandForCell(client, incident.h3Index, now),
     ]);
     if (availableUnits.length === 0) throw new NoAvailableUnitsForRecommendationError(incidentId);
 
@@ -772,6 +800,7 @@ export async function generateRecommendationForIncident(incidentId: string, now:
       candidateEntrances,
       coverageCells: buildLiveCoverageGridCells(),
       routingProvider,
+      areaDemand,
     });
 
     for (const route of result.routeSnapshots) {

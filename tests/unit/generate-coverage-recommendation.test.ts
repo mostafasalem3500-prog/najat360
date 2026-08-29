@@ -220,4 +220,61 @@ describe('generateCoverageAwareRecommendation', () => {
     expect(first.dispatchScore).toBe(second.dispatchScore);
     expect(first.recommendedUnitId).toBe(second.recommendedUnitId);
   });
+
+  it('flags SHIFT_ENDING_SOON when the top-recommended unit is close to shift end, but not when it is not', async () => {
+    const entX: LatLng = { latitude: 10, longitude: 10 };
+    const unitLoc: LatLng = { latitude: 10.001, longitude: 10.001 };
+    const cell: CoverageCellInput = { h3Index: 'cell-1', center: { latitude: 11, longitude: 11 } };
+    const routingProvider = new FakeRoutingProvider();
+    routingProvider.registerRoute(unitLoc, entX, 'VEHICLE', 100);
+    routingProvider.registerMatrixRow(unitLoc, [200]);
+
+    const makeResult = (estimatedAvailabilityMinutes: number | null) =>
+      generateCoverageAwareRecommendation({
+        incidentId: 'inc-1',
+        locationConfidenceIndex: 100,
+        availableUnits: [unit({ id: 'unit-only', location: unitLoc, estimatedAvailabilityMinutes })],
+        candidateEntrances: [entrance({ id: 'ent-X', latitude: entX.latitude, longitude: entX.longitude })],
+        coverageCells: [cell],
+        routingProvider,
+      });
+
+    const soon = await makeResult(10);
+    expect(soon.reasoning.some((r) => r.startsWith('SHIFT_ENDING_SOON:'))).toBe(true);
+
+    const plenty = await makeResult(120);
+    expect(plenty.reasoning.some((r) => r.startsWith('SHIFT_ENDING_SOON:'))).toBe(false);
+
+    const unknown = await makeResult(null);
+    expect(unknown.reasoning.some((r) => r.startsWith('SHIFT_ENDING_SOON:'))).toBe(false);
+  });
+
+  it('flags AREA_DEMAND_HIGH only when areaDemand.recommendedUnits is 2 or more', async () => {
+    const entX: LatLng = { latitude: 10, longitude: 10 };
+    const unitLoc: LatLng = { latitude: 10.001, longitude: 10.001 };
+    const cell: CoverageCellInput = { h3Index: 'cell-1', center: { latitude: 11, longitude: 11 } };
+    const routingProvider = new FakeRoutingProvider();
+    routingProvider.registerRoute(unitLoc, entX, 'VEHICLE', 100);
+    routingProvider.registerMatrixRow(unitLoc, [200]);
+
+    const makeResult = (areaDemand: { predictedDemand: number; recommendedUnits: number } | null) =>
+      generateCoverageAwareRecommendation({
+        incidentId: 'inc-1',
+        locationConfidenceIndex: 100,
+        availableUnits: [unit({ id: 'unit-only', location: unitLoc })],
+        candidateEntrances: [entrance({ id: 'ent-X', latitude: entX.latitude, longitude: entX.longitude })],
+        coverageCells: [cell],
+        routingProvider,
+        areaDemand,
+      });
+
+    const high = await makeResult({ predictedDemand: 4.2, recommendedUnits: 3 });
+    expect(high.reasoning.some((r) => r.startsWith('AREA_DEMAND_HIGH:'))).toBe(true);
+
+    const low = await makeResult({ predictedDemand: 0.5, recommendedUnits: 1 });
+    expect(low.reasoning.some((r) => r.startsWith('AREA_DEMAND_HIGH:'))).toBe(false);
+
+    const none = await makeResult(null);
+    expect(none.reasoning.some((r) => r.startsWith('AREA_DEMAND_HIGH:'))).toBe(false);
+  });
 });
