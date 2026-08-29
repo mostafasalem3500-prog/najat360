@@ -33,6 +33,12 @@ interface DashboardMetrics {
     h3PredictionCells: number;
     highDemandCells: number;
   };
+  locationAccuracy: {
+    avgConfidenceIndex: number | null;
+    byBand: { band: 'HIGH' | 'MEDIUM' | 'LOW'; count: number }[];
+    conflictRatePercent: number | null;
+    totalResolutions: number;
+  };
   recentIncidents: {
     id: string;
     rescueCode: string;
@@ -134,7 +140,8 @@ export default function DashboardPage() {
     );
   }
 
-  const { totals, incidentsByStatus, unitsByStatus, responseTime, demandCoverage, recentIncidents } = metrics;
+  const { totals, incidentsByStatus, unitsByStatus, responseTime, demandCoverage, locationAccuracy, recentIncidents } = metrics;
+  const BAND_LABELS_AR: Record<string, string> = { HIGH: 'مرتفعة', MEDIUM: 'متوسطة', LOW: 'منخفضة' };
 
   return (
     <div className="space-y-6">
@@ -182,6 +189,33 @@ export default function DashboardPage() {
             {unitsByStatus.map((row) => (
               <div key={row.status} className="flex items-center justify-between text-sm">
                 <span className="text-navy/80">{UNIT_STATUS_LABELS_AR[row.status] ?? row.status}</span>
+                <span className="font-bold text-navy">{row.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-bold text-navy mb-2">دقة تحديد الموقع</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="grid grid-cols-2 gap-3">
+            <StatCard
+              label="متوسط درجة الثقة"
+              value={locationAccuracy.avgConfidenceIndex !== null ? Math.round(locationAccuracy.avgConfidenceIndex) : '—'}
+              sub={`عبر ${locationAccuracy.totalResolutions} عملية تحديد موقع`}
+            />
+            <StatCard
+              label="نسبة التعارض بين المصادر"
+              value={locationAccuracy.conflictRatePercent !== null ? `${locationAccuracy.conflictRatePercent}%` : '—'}
+              sub="من عمليات تحديد الموقع"
+            />
+          </div>
+          <div className="card p-4 space-y-2">
+            <p className="text-navy/60 text-sm mb-1">توزيع درجة الثقة</p>
+            {locationAccuracy.byBand.map((row) => (
+              <div key={row.band} className="flex items-center justify-between text-sm">
+                <span className="text-navy/80">{BAND_LABELS_AR[row.band] ?? row.band}</span>
                 <span className="font-bold text-navy">{row.count}</span>
               </div>
             ))}

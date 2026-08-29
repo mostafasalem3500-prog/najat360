@@ -76,12 +76,19 @@ interface FieldActionRow {
   processedAt: string;
 }
 
+interface LocationInsight {
+  explanation: string[];
+  isStale: boolean;
+  ageMinutes: number;
+}
+
 interface IncidentDetail {
   incident: IncidentRow;
   observations: ObservationRow[];
   resolutions: ResolutionRow[];
   recommendations: RecommendationRow[];
   fieldActions: FieldActionRow[];
+  latestLocationInsight: LocationInsight | null;
 }
 
 interface CoverageMetrics {
@@ -368,10 +375,19 @@ export default function OperationsPage() {
               </div>
             )}
 
-            {hasConflict && (
-              <p className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded p-3">
-                تعارض بين مصادر الموقع — يوجد {latestResolution!.conflictingObservationIds.length} رصد متعارض مع المصدر الأساسي.
-              </p>
+            {detail.latestLocationInsight && (
+              <div
+                className={`card p-4 space-y-1 text-sm ${
+                  detail.latestLocationInsight.isStale || hasConflict
+                    ? 'bg-amber-50 border border-amber-200 text-amber-900'
+                    : 'text-navy/80'
+                }`}
+              >
+                <h3 className="font-bold text-navy mb-1">تفسير درجة الثقة بالموقع</h3>
+                {detail.latestLocationInsight.explanation.map((line, i) => (
+                  <p key={i}>{line}</p>
+                ))}
+              </div>
             )}
 
             <div className="card p-4">

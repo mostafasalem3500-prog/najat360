@@ -45,7 +45,9 @@ import {
   type LocationAnchorRecord,
   type NewLocationObservationInput,
 } from '@/lib/location/anchor-resolution';
-import { resolveLocation, type ObservationForResolution, type EntranceCandidate } from '@/lib/location/resolver';
+import { resolveLocation, STALE_THRESHOLD_MINUTES, type ObservationForResolution, type EntranceCandidate } from '@/lib/location/resolver';
+import { explainLocationResolution } from '@/lib/location/explain';
+import { haversineDistanceMeters } from '@/lib/geo';
 import { transition } from '@/lib/incidents/state-machine';
 import { generateCoverageAwareRecommendation } from '@/lib/dispatch/generate-coverage-recommendation';
 import { DISPATCH_SCORE_VERSION } from '@/lib/dispatch/dispatch-score';
@@ -454,13 +456,69 @@ export async function getIncidentDetail(incidentId: string) {
     pool.query(`SELECT * FROM "FieldAction" WHERE "incidentId" = $1 ORDER BY "submittedAt" ASC`, [incidentId]),
   ]);
 
+  const observationRows = observations.rows.map((o) => ({ ...o, latitude: Number(o.latitude), longitude: Number(o.longitude) }));
+  const resolutionRows = resolutions.rows.map((r) => ({ ...r, latitude: Number(r.latitude), longitude: Number(r.longitude) }));
+
   return {
     incident: { ...incident, latitude: Number(incident.latitude), longitude: Number(incident.longitude) },
-    observations: observations.rows.map((o) => ({ ...o, latitude: Number(o.latitude), longitude: Number(o.longitude) })),
-    resolutions: resolutions.rows.map((r) => ({ ...r, latitude: Number(r.latitude), longitude: Number(r.longitude) })),
+    observations: observationRows,
+    resolutions: resolutionRows,
     recommendations: recommendations.rows,
     fieldActions: fieldActions.rows,
+    // Computed at read time from the LATEST resolution row + its observations
+    // — never persisted, same "derive, don't store" discipline as
+    // confidenceScore itself — so an old resolution row from before this
+    // field existed still gets a fresh, correct explanation/staleness read
+    // today instead of showing stale (pun intended) or missing data.
+    latestLocationInsight: buildLatestLocationInsight(observationRows, resolutionRows),
   };
+}
+
+function buildLatestLocationInsight(
+  observations: Array<{ id: string; source: string; capturedAt: Date | string; latitude: number; longitude: number }>,
+  resolutions: Array<{
+    id: string;
+    confidenceIndex: number;
+    primaryObservationId: string;
+    supportingObservationIds: string[];
+    conflictingObservationIds: string[];
+    selectedEntranceId: string | null;
+    createdAt: Date | string;
+  }>
+) {
+  const latest = resolutions[0];
+  if (!latest) return null;
+  const primary = observations.find((o) => o.id === latest.primaryObservationId);
+  if (!primary) return null;
+
+  const now = new Date();
+  const primaryCapturedAt = new Date(primary.capturedAt);
+  const ageMinutes = Math.round(Math.max(0, now.getTime() - primaryCapturedAt.getTime()) / 60_000);
+  const isStale = ageMinutes > STALE_THRESHOLD_MINUTES;
+
+  const maxConflictDistanceMeters =
+    latest.conflictingObservationIds.length > 0
+      ? Math.max(
+          ...latest.conflictingObservationIds.map((id) => {
+            const obs = observations.find((o) => o.id === id);
+            return obs ? Math.round(haversineDistanceMeters(primary, obs)) : 0;
+          })
+        )
+      : undefined;
+
+  const explanation = explainLocationResolution({
+    confidenceBand: latest.confidenceIndex >= 80 ? 'HIGH' : latest.confidenceIndex >= 60 ? 'MEDIUM' : 'LOW',
+    confidenceIndex: latest.confidenceIndex,
+    primarySource: primary.source as Parameters<typeof explainLocationResolution>[0]['primarySource'],
+    hasConflict: latest.conflictingObservationIds.length > 0,
+    conflictingCount: latest.conflictingObservationIds.length,
+    maxConflictDistanceMeters,
+    isStale,
+    ageMinutes,
+    hasEntrance: latest.selectedEntranceId != null,
+  });
+
+  return { explanation, isStale, ageMinutes };
 }
 
 export interface AddObservationInput {
@@ -470,6 +528,8 @@ export interface AddObservationInput {
   longitude: number;
   horizontalAccuracyMeters?: number;
   floorLevel?: string;
+  /** The call-taker/supervisor submitting this observation — stamped onto the resulting LocationResolution.resolvedById so "who confirmed this location" is auditable, not left NULL (see resolver.ts's header + prisma schema doc comment on that column). */
+  actorId?: string;
   now?: Date;
 }
 
@@ -529,8 +589,8 @@ export async function addObservationAndResolve(input: AddObservationInput) {
       `INSERT INTO "LocationResolution"
          (id, "incidentId", latitude, longitude, "uncertaintyRadiusMeters", "confidenceIndex",
           "primaryObservationId", "supportingObservationIds", "conflictingObservationIds",
-          "selectedEntranceId", "floorLevel", "algorithmVersion", "createdAt")
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13)`,
+          "selectedEntranceId", "floorLevel", "algorithmVersion", "resolvedById", "createdAt")
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14)`,
       [
         randomUUID(),
         input.incidentId,
@@ -544,6 +604,7 @@ export async function addObservationAndResolve(input: AddObservationInput) {
         resolution.selectedEntranceId ?? null,
         resolution.floorLevel ?? null,
         resolution.algorithmVersion,
+        input.actorId ?? null,
         now,
       ]
     );
@@ -1124,6 +1185,15 @@ export interface DashboardMetrics {
     h3PredictionCells: number;
     highDemandCells: number;
   };
+  /** Location Accuracy Report / Location Confidence Distribution — computed from every LocationResolution row ever created, not just the latest per incident, so this reflects the full history of what call-takers actually saw. */
+  locationAccuracy: {
+    avgConfidenceIndex: number | null;
+    /** Count of resolutions in each confidenceBand, derived from the same 80/60 cutoffs as lib/confidence.ts's bandFor(). */
+    byBand: { band: 'HIGH' | 'MEDIUM' | 'LOW'; count: number }[];
+    /** Share of resolutions that had at least one conflicting observation, 0-100. */
+    conflictRatePercent: number | null;
+    totalResolutions: number;
+  };
   recentIncidents: {
     id: string;
     rescueCode: string;
@@ -1137,7 +1207,7 @@ export interface DashboardMetrics {
 export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const pool = getPool();
 
-  const [totalsRes, incidentStatusRes, unitStatusRes, responseTimeRes, coverageRes, recentRes] = await Promise.all([
+  const [totalsRes, incidentStatusRes, unitStatusRes, responseTimeRes, coverageRes, locationAccuracyRes, recentRes] = await Promise.all([
     pool.query(
       `SELECT
          (SELECT count(*) FROM "Incident") AS incidents,
@@ -1182,6 +1252,19 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
               count(*) FILTER (WHERE "recommendedUnits" >= 2)::int AS "highDemandCells"
        FROM "H3Prediction"`
     ),
+    // Same 80/60 cutoffs as lib/confidence.ts's bandFor() — kept as a
+    // literal SQL CASE here rather than importing that function, since
+    // this is a pure aggregation query, not app logic re-deriving a score.
+    pool.query(
+      `SELECT
+         avg("confidenceIndex") AS "avgConfidenceIndex",
+         count(*)::int AS "totalResolutions",
+         count(*) FILTER (WHERE "confidenceIndex" >= 80)::int AS "highCount",
+         count(*) FILTER (WHERE "confidenceIndex" >= 60 AND "confidenceIndex" < 80)::int AS "mediumCount",
+         count(*) FILTER (WHERE "confidenceIndex" < 60)::int AS "lowCount",
+         count(*) FILTER (WHERE jsonb_array_length("conflictingObservationIds") > 0)::int AS "conflictCount"
+       FROM "LocationResolution"`
+    ),
     pool.query(
       `SELECT id, "rescueCode", status, priority, "createdAt", "assignedUnitId"
        FROM "Incident" ORDER BY "createdAt" DESC LIMIT 10`
@@ -1191,6 +1274,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const totals = totalsRes.rows[0];
   const rt = responseTimeRes.rows[0];
   const cov = coverageRes.rows[0];
+  const loc = locationAccuracyRes.rows[0];
 
   return {
     totals: {
@@ -1211,6 +1295,16 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     demandCoverage: {
       h3PredictionCells: Number(cov.h3PredictionCells),
       highDemandCells: Number(cov.highDemandCells),
+    },
+    locationAccuracy: {
+      avgConfidenceIndex: loc.avgConfidenceIndex !== null ? Number(loc.avgConfidenceIndex) : null,
+      byBand: [
+        { band: 'HIGH', count: Number(loc.highCount) },
+        { band: 'MEDIUM', count: Number(loc.mediumCount) },
+        { band: 'LOW', count: Number(loc.lowCount) },
+      ],
+      conflictRatePercent: Number(loc.totalResolutions) > 0 ? Math.round((Number(loc.conflictCount) / Number(loc.totalResolutions)) * 100) : null,
+      totalResolutions: Number(loc.totalResolutions),
     },
     recentIncidents: recentRes.rows.map((r) => ({
       id: r.id,

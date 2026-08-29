@@ -30,6 +30,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
       longitude: Number(body.longitude),
       horizontalAccuracyMeters: body.horizontalAccuracyMeters != null ? Number(body.horizontalAccuracyMeters) : undefined,
       floorLevel: body.floorLevel || undefined,
+      actorId: viewer.userId,
     });
     return NextResponse.json({ resolution });
   } catch (err) {

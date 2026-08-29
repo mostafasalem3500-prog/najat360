@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { LOCATION_RESOLVER_VERSION, resolveLocation, type ObservationForResolution } from '@/lib/location/resolver';
 
 const NOW = new Date('2026-08-24T10:10:00Z');
+// Mirrors resolver.ts's own (module-private) CONFLICT_DISTANCE_METERS so this test file doesn't need to import an internal constant.
+const CONFLICT_DISTANCE_METERS_FOR_TEST = 60;
 
 function obs(overrides: Partial<ObservationForResolution> & Pick<ObservationForResolution, 'id' | 'source'>): ObservationForResolution {
   return {
@@ -149,5 +151,27 @@ describe('resolveLocation', () => {
     const snapshot = JSON.parse(JSON.stringify(observations));
     resolveLocation({ observations, now: NOW });
     expect(JSON.parse(JSON.stringify(observations))).toEqual(snapshot);
+  });
+
+  it('reports distanceFromPrimaryMeters for every non-primary observation, supporting and conflicting alike', () => {
+    const primary = obs({ id: 'p', source: 'ANCHOR_QR' });
+    const near = obs({ id: 'near', source: 'BROWSER_GPS', latitude: 24.71365 });
+    const far = obs({ id: 'far', source: 'BROWSER_GPS', latitude: 24.72 });
+    const result = resolveLocation({ observations: [primary, near, far], now: NOW });
+    expect(result.distanceFromPrimaryMeters.near).toBeGreaterThanOrEqual(0);
+    expect(result.distanceFromPrimaryMeters.far).toBeGreaterThan(CONFLICT_DISTANCE_METERS_FOR_TEST);
+    expect(result.distanceFromPrimaryMeters.p).toBeUndefined(); // primary is never keyed against itself
+  });
+
+  it('flags isStale when the primary observation is older than the stale threshold, and not otherwise', () => {
+    const fresh = obs({ id: 'fresh', source: 'ANCHOR_QR', capturedAt: new Date('2026-08-24T10:00:00Z') }); // 10 min old
+    const old = obs({ id: 'old', source: 'ANCHOR_QR', capturedAt: new Date('2026-08-24T09:50:00Z') }); // 20 min old
+    const freshResult = resolveLocation({ observations: [fresh], now: NOW });
+    const oldResult = resolveLocation({ observations: [old], now: NOW });
+    expect(freshResult.isStale).toBe(false);
+    expect(freshResult.ageMinutes).toBe(10);
+    expect(oldResult.isStale).toBe(true);
+    expect(oldResult.ageMinutes).toBe(20);
+    expect(oldResult.reasoning.some((r) => r.startsWith('STALE:'))).toBe(true);
   });
 });

@@ -48,6 +48,15 @@ export const LOCATION_RESOLVER_VERSION = 'location-resolver-v1';
 
 const CONFLICT_DISTANCE_METERS = 60;
 const ENTRANCE_SELECTION_RADIUS_METERS = 150;
+/**
+ * A resolution whose PRIMARY observation is older than this is flagged
+ * `isStale` so the operations UI can prompt a re-capture on a long-running
+ * incident, independent of `dataFreshness`'s smooth 2-30 minute scoring
+ * curve (see `freshnessToScore` below) — a slow-decaying score never
+ * crosses a hard line an operator can act on, so this is a second, blunt
+ * signal specifically for "should I ask the caller to re-share location".
+ */
+export const STALE_THRESHOLD_MINUTES = 15;
 
 const SOURCE_PRIORITY: Record<LocationObservationSource, number> = {
   ANCHOR_QR: 7,
@@ -109,7 +118,12 @@ export interface ResolveLocationResult {
   primaryObservationId: string;
   supportingObservationIds: string[];
   conflictingObservationIds: string[];
+  /** Distance in meters from the primary observation, keyed by observation id — covers BOTH supporting and conflicting ids, so a UI can show "٤٥ م" next to a supporting source too, not just flag conflicts as a bare boolean. */
+  distanceFromPrimaryMeters: Record<string, number>;
   hasConflict: boolean;
+  /** True when the PRIMARY observation is older than STALE_THRESHOLD_MINUTES — see that constant's doc comment. */
+  isStale: boolean;
+  ageMinutes: number;
   selectedEntranceId?: string;
   floorLevel?: string;
   algorithmVersion: string;
@@ -173,6 +187,16 @@ export function resolveLocation(input: ResolveLocationInput): ResolveLocationRes
   if (hasConflict) {
     reasoning.push(`SOURCE_CONFLICT:${conflicting.length}`);
   }
+  const distanceFromPrimaryMeters: Record<string, number> = {};
+  for (const [id, distance] of distanceById) {
+    distanceFromPrimaryMeters[id] = Math.round(distance);
+  }
+
+  const ageMinutes = Math.max(0, now.getTime() - primary.capturedAt.getTime()) / 60_000;
+  const isStale = ageMinutes > STALE_THRESHOLD_MINUTES;
+  if (isStale) {
+    reasoning.push(`STALE:${Math.round(ageMinutes)}min`);
+  }
 
   let uncertaintyRadiusMeters = effectiveAccuracyMeters(primary);
   if (hasConflict) {
@@ -221,7 +245,10 @@ export function resolveLocation(input: ResolveLocationInput): ResolveLocationRes
     primaryObservationId: primary.id,
     supportingObservationIds: supporting,
     conflictingObservationIds: conflicting,
+    distanceFromPrimaryMeters,
     hasConflict,
+    isStale,
+    ageMinutes: Math.round(ageMinutes),
     selectedEntranceId,
     floorLevel,
     algorithmVersion: LOCATION_RESOLVER_VERSION,
