@@ -58,6 +58,7 @@ import { MockRoutingProvider } from '@/lib/routing/mock-provider';
 import { latLngToH3Cell, h3CellToLatLng, h3GridDisk } from '@/lib/gis/h3';
 import { computeCoverageMetrics, type CoverageCellInput } from '@/lib/gis/coverage';
 import { computeRepositioningHotspots, type AreaDemand, type RepositioningHotspot } from '@/lib/gis/repositioning';
+import { buildExportMetadata, buildIncidentExportCsv } from '@/lib/export/csv';
 import type {
   FieldActionType,
   IncidentStatus,
@@ -1404,4 +1405,48 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
       assignedUnitId: r.assignedUnitId,
     })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reports (spec 30.9: CSV export of already-authorized in-app data, with
+// metadata + an AuditLog entry) — currently just the positioning-hotspots
+// report; the dashboard's other sections (location accuracy, response
+// time) are single numbers already fully visible on-screen and don't yet
+// need a downloadable form.
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the "نقاط التمركز الساخنة" (positioning hotspots) CSV report from
+ * the SAME live computation getDashboardMetrics()'s `positioning` section
+ * uses — this is a snapshot at export time, not a stored report, so two
+ * exports a minute apart can legitimately differ as the fleet moves.
+ * Per spec 30.9, records one AuditLog entry for the export itself.
+ */
+export async function exportPositioningReportCsv(actorId: string, now: Date = new Date()): Promise<string> {
+  const metrics = await getDashboardMetrics();
+  const rows = metrics.positioning.hotspots.map((h) => ({
+    h3Index: h.h3Index,
+    etaMinutes: Math.round(h.etaSeconds / 60),
+    predictedDemand: h.predictedDemand,
+    recommendedUnits: h.recommendedUnits,
+    nearestUnitId: h.nearestUnitId,
+    reasoning: h.reasoning.join(' | '),
+  }));
+  const metadata = buildExportMetadata(
+    { report: 'positioning-hotspots', gapCellCount: metrics.positioning.gapCellCount, totalCells: metrics.positioning.totalCells },
+    now
+  );
+  const csv = buildIncidentExportCsv(rows, metadata);
+
+  await withTransaction(async (client) => {
+    await insertAuditLog(client, {
+      actorId,
+      action: 'EXPORT_POSITIONING_REPORT',
+      entityType: 'DashboardReport',
+      entityId: 'positioning-hotspots',
+      after: { rowCount: rows.length, gapCellCount: metrics.positioning.gapCellCount, totalCells: metrics.positioning.totalCells },
+    });
+  });
+
+  return csv;
 }

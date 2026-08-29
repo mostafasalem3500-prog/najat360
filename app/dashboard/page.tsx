@@ -244,7 +244,15 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-lg font-bold text-navy mb-2">توصيات التمركز الاستباقي</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-bold text-navy">توصيات التمركز الاستباقي</h2>
+          <a
+            href="/api/dashboard/export/positioning"
+            className="text-xs font-medium rounded-full bg-navy/5 text-navy px-3 py-1 hover:bg-navy/10 transition"
+          >
+            تصدير CSV
+          </a>
+        </div>
         <p className="text-navy/50 text-xs mb-2">
           خلايا هي فجوة تغطية حاليًا بموقع الأسطول الحالي *و* لها طلب متوقع — إشارة للنظر فيها، وليست أمرًا تلقائيًا؛ القرار بيد المشرف.
           {` (${positioning.gapCellCount} من ${positioning.totalCells} خلية تعتبر فجوة تغطية الآن)`}
