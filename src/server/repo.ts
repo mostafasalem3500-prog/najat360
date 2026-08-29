@@ -56,7 +56,8 @@ import { decideDispatch, type FreshUnitStatus } from '@/lib/dispatch/decision';
 import { submitFieldAction, type ExistingFieldActionRef } from '@/lib/fieldlink/field-action';
 import { MockRoutingProvider } from '@/lib/routing/mock-provider';
 import { latLngToH3Cell, h3CellToLatLng, h3GridDisk } from '@/lib/gis/h3';
-import type { CoverageCellInput } from '@/lib/gis/coverage';
+import { computeCoverageMetrics, type CoverageCellInput } from '@/lib/gis/coverage';
+import { computeRepositioningHotspots, type AreaDemand, type RepositioningHotspot } from '@/lib/gis/repositioning';
 import type {
   FieldActionType,
   IncidentStatus,
@@ -1223,6 +1224,20 @@ export interface DashboardMetrics {
     conflictRatePercent: number | null;
     totalResolutions: number;
   };
+  /**
+   * Proactive repositioning hotspots (lib/gis/repositioning.ts) — coverage
+   * gaps in the live fleet's CURRENT parking, cross-referenced against
+   * H3Prediction demand, independent of any specific incident. Empty
+   * (never null) when there are fewer than 2 AVAILABLE units with a known
+   * location (coverage math needs at least one unit, and a single-unit
+   * fleet has no meaningful "gap" to report) or no coverage grid cells
+   * have a demand prediction yet.
+   */
+  positioning: {
+    hotspots: RepositioningHotspot[];
+    gapCellCount: number;
+    totalCells: number;
+  };
   recentIncidents: {
     id: string;
     rescueCode: string;
@@ -1305,6 +1320,50 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   const cov = coverageRes.rows[0];
   const loc = locationAccuracyRes.rows[0];
 
+  // Positioning hotspots — computed separately from the Promise.all above
+  // because it needs a routing-matrix call over whichever units/cells the
+  // first two queries return, not just a plain aggregation. Best-effort:
+  // this is a supplementary insight, so any failure here (no available
+  // units yet, no demand predictions seeded) falls back to an empty
+  // section rather than failing the whole dashboard.
+  let positioning: DashboardMetrics['positioning'] = { hotspots: [], gapCellCount: 0, totalCells: 0 };
+  try {
+    const unitsRes = await pool.query(
+      `SELECT u.id, ul.latitude, ul.longitude
+       FROM "AmbulanceUnit" u
+       JOIN LATERAL (
+         SELECT latitude, longitude FROM "UnitLocation" WHERE "unitId" = u.id ORDER BY "capturedAt" DESC LIMIT 1
+       ) ul ON true
+       WHERE u.status = 'AVAILABLE'`
+    );
+    const units = unitsRes.rows.map((u) => ({ id: u.id as string, location: { latitude: Number(u.latitude), longitude: Number(u.longitude) } }));
+    const cells = buildLiveCoverageGridCells();
+
+    if (units.length > 0 && cells.length > 0) {
+      const coverageMetrics = await computeCoverageMetrics({ cells, units, routingProvider: new MockRoutingProvider() });
+
+      const demandRes = await pool.query(
+        `SELECT DISTINCT ON ("h3Index") "h3Index", "predictedDemand", "recommendedUnits"
+         FROM "H3Prediction"
+         WHERE "h3Index" = ANY($1::text[]) AND "windowStart" <= now()
+         ORDER BY "h3Index", "windowStart" DESC`,
+        [cells.map((c) => c.h3Index)]
+      );
+      const demandByCell: Record<string, AreaDemand> = {};
+      for (const row of demandRes.rows) {
+        demandByCell[row.h3Index as string] = { predictedDemand: Number(row.predictedDemand), recommendedUnits: Number(row.recommendedUnits) };
+      }
+
+      positioning = {
+        hotspots: computeRepositioningHotspots({ cells: coverageMetrics.cells, demandByCell }),
+        gapCellCount: coverageMetrics.gapCellCount,
+        totalCells: coverageMetrics.totalCells,
+      };
+    }
+  } catch {
+    // See comment above — leave `positioning` at its empty default.
+  }
+
   return {
     totals: {
       incidents: Number(totals.incidents),
@@ -1335,6 +1394,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
       conflictRatePercent: Number(loc.totalResolutions) > 0 ? Math.round((Number(loc.conflictCount) / Number(loc.totalResolutions)) * 100) : null,
       totalResolutions: Number(loc.totalResolutions),
     },
+    positioning,
     recentIncidents: recentRes.rows.map((r) => ({
       id: r.id,
       rescueCode: r.rescueCode,

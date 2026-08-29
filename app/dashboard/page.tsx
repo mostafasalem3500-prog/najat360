@@ -39,6 +39,18 @@ interface DashboardMetrics {
     conflictRatePercent: number | null;
     totalResolutions: number;
   };
+  positioning: {
+    hotspots: {
+      h3Index: string;
+      etaSeconds: number;
+      predictedDemand: number;
+      recommendedUnits: number;
+      nearestUnitId: string;
+      reasoning: string[];
+    }[];
+    gapCellCount: number;
+    totalCells: number;
+  };
   recentIncidents: {
     id: string;
     rescueCode: string;
@@ -140,7 +152,7 @@ export default function DashboardPage() {
     );
   }
 
-  const { totals, incidentsByStatus, unitsByStatus, responseTime, demandCoverage, locationAccuracy, recentIncidents } = metrics;
+  const { totals, incidentsByStatus, unitsByStatus, responseTime, demandCoverage, locationAccuracy, positioning, recentIncidents } = metrics;
   const BAND_LABELS_AR: Record<string, string> = { HIGH: 'مرتفعة', MEDIUM: 'متوسطة', LOW: 'منخفضة' };
 
   return (
@@ -229,6 +241,33 @@ export default function DashboardPage() {
           <StatCard label="خلايا تنبؤ محسوبة" value={demandCoverage.h3PredictionCells} />
           <StatCard label="خلايا طلب مرتفع" value={demandCoverage.highDemandCells} sub="تحتاج وحدتين أو أكثر" />
         </div>
+      </section>
+
+      <section>
+        <h2 className="text-lg font-bold text-navy mb-2">توصيات التمركز الاستباقي</h2>
+        <p className="text-navy/50 text-xs mb-2">
+          خلايا هي فجوة تغطية حاليًا بموقع الأسطول الحالي *و* لها طلب متوقع — إشارة للنظر فيها، وليست أمرًا تلقائيًا؛ القرار بيد المشرف.
+          {` (${positioning.gapCellCount} من ${positioning.totalCells} خلية تعتبر فجوة تغطية الآن)`}
+        </p>
+        {positioning.hotspots.length === 0 ? (
+          <div className="card p-4 text-navy/50 text-sm">لا توجد نقاط ساخنة تحتاج إعادة تمركز حاليًا.</div>
+        ) : (
+          <div className="space-y-2">
+            {positioning.hotspots.map((h) => (
+              <div key={h.h3Index} className="card p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-mono text-xs text-navy/60">{h.h3Index}</span>
+                  <span className="text-xs font-bold text-amber-700">يوصى بـ {h.recommendedUnits} وحدة</span>
+                </div>
+                {h.reasoning.map((line, i) => (
+                  <p key={i} className="text-sm text-navy/80">
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section>
