@@ -14,6 +14,7 @@
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '../_lib/api';
 import { broadcastRoleChanged } from '../_lib/role-events';
+import { Headset, ShieldCheck, Ambulance, FlaskConical } from 'lucide-react';
 
 interface DemoSession {
   role: string;
@@ -63,25 +64,29 @@ export default function RoleSwitcher() {
 
   if (session === undefined) return null;
 
+  const roleBtn = (active: boolean) =>
+    `flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold transition-all ${
+      active
+        ? 'bg-gradient-to-l from-navy to-navy-dark text-white shadow-sm shadow-navy/30'
+        : 'border border-navy/20 text-navy/80 hover:border-navy/40 hover:bg-navy/5'
+    }`;
+
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">
-      <span className="synthetic-badge">وضع تجريبي</span>
-      <button
-        onClick={() => chooseRole('CALL_TAKER')}
-        className={`px-3 py-1 rounded-full border ${session?.role === 'CALL_TAKER' ? 'bg-cherry text-white border-cherry' : 'border-navy/30 text-navy'}`}
-      >
+      <span className="synthetic-badge">
+        <FlaskConical size={12} strokeWidth={2.5} />
+        وضع تجريبي
+      </span>
+      <button onClick={() => chooseRole('CALL_TAKER')} className={roleBtn(session?.role === 'CALL_TAKER')}>
+        <Headset size={14} strokeWidth={2.25} />
         {ROLE_LABELS_AR.CALL_TAKER}
       </button>
-      <button
-        onClick={() => chooseRole('SUPERVISOR')}
-        className={`px-3 py-1 rounded-full border ${session?.role === 'SUPERVISOR' ? 'bg-cherry text-white border-cherry' : 'border-navy/30 text-navy'}`}
-      >
+      <button onClick={() => chooseRole('SUPERVISOR')} className={roleBtn(session?.role === 'SUPERVISOR')}>
+        <ShieldCheck size={14} strokeWidth={2.25} />
         {ROLE_LABELS_AR.SUPERVISOR}
       </button>
-      <button
-        onClick={() => setShowUnitPicker((v) => !v)}
-        className={`px-3 py-1 rounded-full border ${session?.role === 'MEDIC' ? 'bg-cherry text-white border-cherry' : 'border-navy/30 text-navy'}`}
-      >
+      <button onClick={() => setShowUnitPicker((v) => !v)} className={roleBtn(session?.role === 'MEDIC')}>
+        <Ambulance size={14} strokeWidth={2.25} />
         {ROLE_LABELS_AR.MEDIC}
         {session?.role === 'MEDIC' ? ` — ${units.find((u) => u.id === session.unitId)?.code ?? '...'}` : ''}
       </button>
@@ -91,7 +96,7 @@ export default function RoleSwitcher() {
           onChange={(e) => {
             if (e.target.value) chooseRole('MEDIC', e.target.value);
           }}
-          className="border rounded px-2 py-1"
+          className="border border-navy/20 rounded-full px-3 py-1.5 text-sm bg-white"
         >
           <option value="" disabled>
             اختر الوحدة...

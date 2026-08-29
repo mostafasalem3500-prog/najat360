@@ -12,6 +12,41 @@
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost, ApiError } from '../_lib/api';
 import { onRoleChanged } from '../_lib/role-events';
+import {
+  Activity,
+  Siren,
+  CheckCircle2,
+  Truck,
+  TruckElectric,
+  Clock,
+  Timer,
+  Radar,
+  Target,
+  ShieldAlert,
+  Compass,
+  Sparkles,
+  Download,
+  ListChecks,
+  BarChart3,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+
+/** Maps a StatCard's label text to an icon — a lookup keyed by label rather than a prop on every call site, so every existing <StatCard label="..." /> below automatically picks up an icon without individually touching 15+ call sites. */
+const STAT_ICONS: Record<string, LucideIcon> = {
+  'إجمالي البلاغات': Activity,
+  'بلاغات نشطة': Siren,
+  'أُغلقت اليوم': CheckCircle2,
+  'إجمالي الوحدات': Truck,
+  'وحدات متاحة الآن': TruckElectric,
+  'متوسط زمن الإسناد': Clock,
+  'متوسط زمن الوصول': Timer,
+  'متوسط زمن الإغلاق الكامل': Clock,
+  'حجم العينة': ListChecks,
+  'متوسط درجة الثقة': Target,
+  'نسبة التعارض بين المصادر': ShieldAlert,
+  'خلايا تنبؤ محسوبة': Radar,
+  'خلايا طلب مرتفع': ShieldAlert,
+};
 
 interface DashboardMetrics {
   totals: {
@@ -113,11 +148,17 @@ function fmtMinutes(v: number | null): string {
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+  const Icon = STAT_ICONS[label] ?? BarChart3;
   return (
-    <div className="card p-4">
-      <p className="text-navy/60 text-sm">{label}</p>
-      <p className="text-2xl font-bold text-navy">{value}</p>
-      {sub && <p className="text-navy/50 text-xs mt-1">{sub}</p>}
+    <div className="card p-4 flex items-start gap-3">
+      <span className="shrink-0 flex items-center justify-center w-9 h-9 rounded-lg bg-navy/5 text-navy">
+        <Icon size={17} strokeWidth={2.25} />
+      </span>
+      <div className="min-w-0">
+        <p className="text-navy/60 text-xs">{label}</p>
+        <p className="text-2xl font-black text-navy leading-tight">{value}</p>
+        {sub && <p className="text-navy/45 text-xs mt-0.5">{sub}</p>}
+      </div>
     </div>
   );
 }
@@ -210,7 +251,7 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-lg font-bold text-navy mb-2">زمن الاستجابة</h2>
+        <h2 className="text-lg font-bold text-navy mb-2 flex items-center gap-2"><Timer size={19} className="text-cherry" strokeWidth={2.25} />زمن الاستجابة</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <StatCard label="متوسط زمن الإسناد" value={fmtMinutes(responseTime.avgDispatchMinutes)} sub="من استلام البلاغ حتى إسناد وحدة" />
           <StatCard label="متوسط زمن الوصول" value={fmtMinutes(responseTime.avgArrivalMinutes)} sub="من الإسناد حتى الوصول للموقع" />
@@ -221,7 +262,7 @@ export default function DashboardPage() {
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <h2 className="text-lg font-bold text-navy mb-2">البلاغات حسب الحالة</h2>
+          <h2 className="text-lg font-bold text-navy mb-2 flex items-center gap-2"><Activity size={19} className="text-cherry" strokeWidth={2.25} />البلاغات حسب الحالة</h2>
           <div className="card p-4 space-y-2">
             {incidentsByStatus.map((row) => (
               <div key={row.status} className="flex items-center justify-between text-sm">
@@ -232,7 +273,7 @@ export default function DashboardPage() {
           </div>
         </div>
         <div>
-          <h2 className="text-lg font-bold text-navy mb-2">الوحدات حسب الحالة</h2>
+          <h2 className="text-lg font-bold text-navy mb-2 flex items-center gap-2"><Truck size={19} className="text-cherry" strokeWidth={2.25} />الوحدات حسب الحالة</h2>
           <div className="card p-4 space-y-2">
             {unitsByStatus.map((row) => (
               <div key={row.status} className="flex items-center justify-between text-sm">
@@ -246,11 +287,12 @@ export default function DashboardPage() {
 
       <section>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-lg font-bold text-navy">دقة تحديد الموقع</h2>
+          <h2 className="text-lg font-bold text-navy flex items-center gap-2"><Target size={19} className="text-cherry" strokeWidth={2.25} />دقة تحديد الموقع</h2>
           <a
             href="/api/dashboard/export/location-accuracy"
-            className="text-xs font-medium rounded-full bg-navy/5 text-navy px-3 py-1 hover:bg-navy/10 transition"
+            className="flex items-center gap-1 text-xs font-medium rounded-full bg-navy/5 text-navy px-3 py-1 hover:bg-navy/10 transition"
           >
+            <Download size={13} strokeWidth={2.25} />
             تصدير CSV
           </a>
         </div>
@@ -280,7 +322,7 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-lg font-bold text-navy mb-2">تغطية الطلب (H3)</h2>
+        <h2 className="text-lg font-bold text-navy mb-2 flex items-center gap-2"><Radar size={19} className="text-cherry" strokeWidth={2.25} />تغطية الطلب (H3)</h2>
         <div className="grid grid-cols-2 gap-3">
           <StatCard label="خلايا تنبؤ محسوبة" value={demandCoverage.h3PredictionCells} />
           <StatCard label="خلايا طلب مرتفع" value={demandCoverage.highDemandCells} sub="تحتاج وحدتين أو أكثر" />
@@ -289,11 +331,12 @@ export default function DashboardPage() {
 
       <section>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-lg font-bold text-navy">توصيات التمركز الاستباقي</h2>
+          <h2 className="text-lg font-bold text-navy flex items-center gap-2"><Compass size={19} className="text-cherry" strokeWidth={2.25} />توصيات التمركز الاستباقي</h2>
           <a
             href="/api/dashboard/export/positioning"
-            className="text-xs font-medium rounded-full bg-navy/5 text-navy px-3 py-1 hover:bg-navy/10 transition"
+            className="flex items-center gap-1 text-xs font-medium rounded-full bg-navy/5 text-navy px-3 py-1 hover:bg-navy/10 transition"
           >
+            <Download size={13} strokeWidth={2.25} />
             تصدير CSV
           </a>
         </div>
@@ -327,9 +370,16 @@ export default function DashboardPage() {
             <button
               onClick={requestRepositioningSuggestion}
               disabled={repositionLoading}
-              className="text-xs font-medium rounded-full bg-cherry/10 text-cherry px-3 py-1 hover:bg-cherry/20 transition disabled:opacity-50"
+              className="flex items-center gap-1 text-xs font-medium rounded-full bg-cherry/10 text-cherry px-3 py-1 hover:bg-cherry/20 transition disabled:opacity-50"
             >
-              {repositionLoading ? 'جارٍ الحساب…' : 'اقترح نقلة الآن'}
+              {repositionLoading ? (
+                'جارٍ الحساب…'
+              ) : (
+                <>
+                  <Sparkles size={13} strokeWidth={2.25} />
+                  اقترح نقلة الآن
+                </>
+              )}
             </button>
           </div>
           <p className="text-navy/50 text-xs mb-2">
@@ -362,7 +412,7 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-lg font-bold text-navy mb-2">أحدث البلاغات</h2>
+        <h2 className="text-lg font-bold text-navy mb-2 flex items-center gap-2"><ListChecks size={19} className="text-cherry" strokeWidth={2.25} />أحدث البلاغات</h2>
         <div className="card overflow-x-auto">
           <table className="w-full text-sm text-right">
             <thead>

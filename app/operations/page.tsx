@@ -17,6 +17,7 @@ import { apiGet, apiPost, ApiError } from '../_lib/api';
 import { onRoleChanged } from '../_lib/role-events';
 import { explainDispatchWarnings } from '@/lib/dispatch/explain';
 import type { MapPoint } from '../_components/IncidentMap';
+import { Compass, ListChecks } from 'lucide-react';
 
 /** Leaflet touches window/document, so it can only run client-side — see IncidentMap.tsx's header. */
 const IncidentMap = dynamic(() => import('../_components/IncidentMap'), { ssr: false });
@@ -347,8 +348,9 @@ export default function OperationsPage() {
   return (
     <div className="space-y-4">
       {role === 'SUPERVISOR' && hotspots.length > 0 && (
-        <div className="card p-3 border-r-4 border-amber-500">
-          <p className="font-bold text-navy text-sm mb-2">
+        <div className="card p-3 border-r-4 border-amber-500 animate-in">
+          <p className="font-bold text-navy text-sm mb-2 flex items-center gap-1.5">
+            <Compass size={16} className="text-amber-600" strokeWidth={2.25} />
             توصيات التمركز الاستباقي ({hotspots.length}) — فجوات تغطية بها طلب متوقع، بغض النظر عن البلاغ المحدد حاليًا
           </p>
           <div className="flex flex-wrap gap-2">
@@ -364,7 +366,10 @@ export default function OperationsPage() {
       )}
       <div className="grid md:grid-cols-3 gap-4">
       <div className="card p-3 space-y-2 md:col-span-1 max-h-[75vh] overflow-y-auto">
-        <h2 className="font-bold text-navy px-1">البلاغات النشطة ({incidents.length})</h2>
+        <h2 className="font-bold text-navy px-1 flex items-center gap-1.5">
+          <ListChecks size={17} className="text-cherry" strokeWidth={2.25} />
+          البلاغات النشطة ({incidents.length})
+        </h2>
         {incidents.map((inc) => (
           <button
             key={inc.id}

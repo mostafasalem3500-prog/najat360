@@ -11,6 +11,20 @@ body {
   color: #241010;
 }
 
+/* Soft, layered gradient wash behind every screen — subtle enough that
+   text/cards stay perfectly readable, but replaces the previous flat
+   off-white with something that reads as an intentional, designed
+   product rather than an unstyled prototype. Fixed so it doesn't repeat
+   or shift while scrolling long pages (e.g. the dashboard). */
+.bg-app-gradient {
+  background-color: #f8f6f5;
+  background-image:
+    radial-gradient(ellipse 900px 500px at 8% -5%, rgba(30, 39, 97, 0.07), transparent 60%),
+    radial-gradient(ellipse 900px 500px at 100% 0%, rgba(153, 0, 17, 0.06), transparent 55%),
+    radial-gradient(ellipse 700px 500px at 50% 100%, rgba(201, 162, 39, 0.05), transparent 60%);
+  background-attachment: fixed;
+}
+
 /* Every screen must make synthetic/demo data visually unmistakable —
    see docs' "بيانات Demo موسومة بوضوح" requirement, restated in
    src/lib/demo-mode.ts's header comment for the same principle applied
@@ -31,7 +45,102 @@ body {
 
 .card {
   background: white;
-  border-radius: 0.75rem;
+  border-radius: 1rem;
   border: 1px solid #eee0e1;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 3px rgba(30, 15, 15, 0.05), 0 1px 2px rgba(30, 15, 15, 0.03);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+/* Cards that are also links/buttons (StepCard, incident rows, etc.) get a
+   gentle lift on hover — the rest keep .card's static shadow so static
+   content (stat tiles, report rows) doesn't look clickable when it isn't. */
+a.card:hover,
+button.card:hover {
+  box-shadow: 0 12px 24px -8px rgba(30, 15, 15, 0.14);
+  transform: translateY(-2px);
+}
+
+/* Frosted glass accent panel — used for hero/summary banners that want to
+   stand out from plain white cards without competing with the cherry/navy
+   brand colors. */
+.card-glass {
+  background: linear-gradient(135deg, rgba(30, 39, 97, 0.04), rgba(153, 0, 17, 0.03));
+  border: 1px solid rgba(30, 39, 97, 0.08);
+  border-radius: 1rem;
+}
+
+/* Gradient text used sparingly for hero headings — one or two per page,
+   never body text, so it stays an accent rather than a legibility risk. */
+.text-gradient-brand {
+  background: linear-gradient(90deg, #1e2761, #990011);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-weight: 700;
+  font-size: 0.875rem;
+  border-radius: 0.75rem;
+  padding: 0.55rem 1.1rem;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: linear-gradient(135deg, #990011, #6b000c);
+  color: white;
+  box-shadow: 0 4px 14px -4px rgba(153, 0, 17, 0.4);
+}
+.btn-primary:not(:disabled):hover {
+  box-shadow: 0 6px 18px -4px rgba(153, 0, 17, 0.5);
+  transform: translateY(-1px);
+}
+.btn-secondary {
+  background: white;
+  color: #1e2761;
+  border: 1.5px solid rgba(30, 39, 97, 0.2);
+}
+.btn-secondary:not(:disabled):hover {
+  border-color: #1e2761;
+  background: rgba(30, 39, 97, 0.04);
+}
+.btn-ghost {
+  background: rgba(30, 39, 97, 0.06);
+  color: #1e2761;
+}
+.btn-ghost:not(:disabled):hover {
+  background: rgba(30, 39, 97, 0.12);
+}
+
+/* Small metric/status pill — icons+label used across dashboard/operations. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-in {
+  animation: fade-in-up 0.35s ease-out both;
 }
