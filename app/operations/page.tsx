@@ -14,6 +14,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { apiGet, apiPost, ApiError } from '../_lib/api';
+import { onRoleChanged } from '../_lib/role-events';
 import type { MapPoint } from '../_components/IncidentMap';
 
 /** Leaflet touches window/document, so it can only run client-side — see IncidentMap.tsx's header. */
@@ -157,13 +158,25 @@ export default function OperationsPage() {
     }
   }, []);
 
-  const loadDetail = useCallback(async (id: string) => {
+  // `resetGenerated` defaults to true (every existing call site — the
+  // selectedId effect, addObservation, confirmLocation, decideDispatch —
+  // keeps clearing the just-superseded recommendation once its action
+  // completes). generateRecommendation() below is the one caller that
+  // passes `false`: it needs the freshly-generated recommendation to
+  // survive this same loadDetail() call so the UI actually shows it,
+  // instead of loadDetail unconditionally nulling `generated` back out
+  // the instant it runs (which previously made every recommendation
+  // vanish before it could render — see the QA report's Critical Bug #1).
+  const loadDetail = useCallback(async (id: string, opts: { resetGenerated?: boolean } = {}) => {
+    const { resetGenerated = true } = opts;
     try {
       const r = await apiGet<IncidentDetail>(`/api/operations/incidents/${id}`);
       setDetail(r);
-      setGenerated(null);
-      setChosenUnitId(r.incident.assignedUnitId ?? '');
-      setChosenEntranceId(r.incident.assignedEntranceId ?? '');
+      if (resetGenerated) {
+        setGenerated(null);
+        setChosenUnitId(r.incident.assignedUnitId ?? '');
+        setChosenEntranceId(r.incident.assignedEntranceId ?? '');
+      }
       setOverrideReason('');
     } catch (e) {
       if (e instanceof Error) setError(e.message);
@@ -175,6 +188,10 @@ export default function OperationsPage() {
     apiGet<{ units: LookupRow[] }>('/api/operations/units-map').then((r) => setUnits(r.units));
     apiGet<{ entrances: LookupRow[] }>('/api/entrances').then((r) => setEntrances(r.entrances));
   }, []);
+
+  // Picks up a role switch made from the header's Demo Role Switcher
+  // without needing a manual page reload — see role-events.ts's header.
+  useEffect(() => onRoleChanged((session) => setRole(session.role)), []);
 
   useEffect(() => {
     if (role === 'CALL_TAKER' || role === 'SUPERVISOR') {
@@ -227,12 +244,17 @@ export default function OperationsPage() {
   async function generateRecommendation() {
     if (!selectedId) return;
     const result = await runAction(() => apiPost<GenerateResult>(`/api/operations/incidents/${selectedId}/recommendation`));
+    // Refresh the incident detail WITHOUT letting loadDetail reset
+    // `generated`/chosen unit/chosen entrance — those get set from
+    // `result` right after, and loadDetail's own reset (driven by
+    // `incident.assignedUnitId`, still empty pre-dispatch) would
+    // otherwise immediately overwrite them with blanks.
+    await loadDetail(selectedId, { resetGenerated: false });
     if (result) {
       setGenerated(result);
       setChosenUnitId(result.recommendedUnitId);
       setChosenEntranceId(result.recommendedEntranceId);
     }
-    await loadDetail(selectedId);
   }
 
   async function decideDispatch() {

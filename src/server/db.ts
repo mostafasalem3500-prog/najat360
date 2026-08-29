@@ -35,7 +35,19 @@ export function getPool(): Pool {
     if (!databaseUrl) {
       throw new Error('DATABASE_URL is not set — see .env.example');
     }
-    global.__najat360Pool = new Pool({ connectionString: databaseUrl, max: 5 });
+    global.__najat360Pool = new Pool({
+      connectionString: databaseUrl,
+      max: 5,
+      // Force UTF8 client encoding on every connection this pool opens,
+      // regardless of what locale/codepage the PROCESS this server runs in
+      // inherited (PGCLIENTENCODING, an Arabic-locale Windows codepage,
+      // etc.) — a mismatched client_encoding is the classic cause of
+      // Arabic text round-tripping as mojibake through `pg` while the
+      // source literal and the stored bytes are both fine (see the QA
+      // report's /anchors mojibake bug; scripts/seed-demo.ts's Pool gets
+      // the same option for the same reason).
+      options: '-c client_encoding=UTF8',
+    });
   }
   return global.__najat360Pool;
 }

@@ -33,7 +33,8 @@
  * session would produce.
  */
 import { createHash } from 'node:crypto';
-import { Pool } from 'pg';
+import { pathToFileURL } from 'node:url';
+import { Pool, type PoolClient } from 'pg';
 import { loadEnvFile } from './env';
 import { createSeededRandom, jitterCoordinate, randomChoice, randomFloat, randomInt } from '@/lib/deterministic-random';
 import { generateDeterministicRescueCode } from '@/lib/rescue-code';
@@ -335,11 +336,12 @@ export function buildHistoricalIncidents(
   rng: ReturnType<typeof createSeededRandom>,
   usedRescueCodes: Set<string>,
   entrances: EntranceRow[],
-  units: UnitRow[]
+  units: UnitRow[],
+  count: number = HISTORICAL_INCIDENT_COUNT
 ): IncidentRow[] {
   const now = Date.now();
   const rows: IncidentRow[] = [];
-  for (let i = 1; i <= HISTORICAL_INCIDENT_COUNT; i++) {
+  for (let i = 1; i <= count; i++) {
     const daysAgo = randomInt(rng, 1, 90);
     const minutesJitter = randomInt(rng, 0, 1439);
     const createdAt = new Date(now - daysAgo * 86_400_000 - minutesJitter * 60_000);
@@ -1368,23 +1370,33 @@ export async function buildCoverageAwareRecommendationFixture(
   };
 }
 
-async function run(): Promise<void> {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error('DATABASE_URL is not set — see .env.example');
-  }
-
-  const pool = new Pool({ connectionString: databaseUrl });
-  const client = await pool.connect();
-
-  try {
-    const rng = createSeededRandom(SEED_VALUE);
-    const usedRescueCodes = new Set<string>();
-    const entrances = buildEntrances(rng);
-    const units = buildUnits(rng);
-    const historicalIncidents = buildHistoricalIncidents(rng, usedRescueCodes, entrances, units);
-    const activeIncidents = buildActiveIncidents(rng, usedRescueCodes, entrances, units);
-    const users = buildUsers();
+/**
+ * The full fixture-build + INSERT sequence, parameterized over an
+ * already-connected `PoolClient` whose transaction lifecycle (BEGIN /
+ * COMMIT / ROLLBACK / release) is the CALLER's responsibility — this lets
+ * both the CLI entrypoint (`run()`, below) and the in-process
+ * `/api/demo/reset` route (see app/api/demo/reset/route.ts) share one
+ * source of truth for what "seeded demo data" means, instead of the route
+ * shelling out to `npx tsx` (which has no writable/installable filesystem
+ * on Vercel's serverless runtime and was the root cause of that endpoint's
+ * 500s). `opts.historicalCount` overrides `HISTORICAL_INCIDENT_COUNT`
+ * (module-level, env-derived, fixed at import time) without needing to
+ * mutate `process.env` per-request — used by the reset route's `?fast=1`.
+ */
+export async function seedDemoData(client: PoolClient, opts: { historicalCount?: number } = {}): Promise<void> {
+  const rng = createSeededRandom(SEED_VALUE);
+  const usedRescueCodes = new Set<string>();
+  const entrances = buildEntrances(rng);
+  const units = buildUnits(rng);
+  const historicalIncidents = buildHistoricalIncidents(
+    rng,
+    usedRescueCodes,
+    entrances,
+    units,
+    opts.historicalCount
+  );
+  const activeIncidents = buildActiveIncidents(rng, usedRescueCodes, entrances, units);
+  const users = buildUsers();
 
     // Computed here (before the Incident INSERT loop below) rather than
     // after it, unlike buildAssistedCaptureFixtures(): buildDispatchFixtures()
@@ -1433,8 +1445,6 @@ async function run(): Promise<void> {
       locationResolutions,
       coverageCells
     );
-
-    await client.query('BEGIN');
 
     for (const u of users) {
       await client.query(
@@ -1915,7 +1925,6 @@ async function run(): Promise<void> {
     );
     console.log(`seeded 1 coverage-aware recommendation (simulation, algorithm ${covRec.algorithmVersion}, unit ${covRec.recommendedUnitId})`);
 
-    await client.query('COMMIT');
     console.log(
       `done: ${users.length} users, ${entrances.length} entrances, ${units.length} units, ` +
         `${historicalIncidents.length} historical incidents, ${activeIncidents.length} active incidents, ` +
@@ -1924,6 +1933,30 @@ async function run(): Promise<void> {
         `${dispatch.routeSnapshots.length} route snapshots, 2 recommendations, ${fieldLink.fieldActions.length} field actions, ` +
         `${h3Predictions.length} H3 demand predictions`
     );
+}
+
+/**
+ * CLI entrypoint (`npm run seed` / `tsx scripts/seed-demo.ts`): owns the
+ * pool/connection/transaction lifecycle around the shared `seedDemoData()`
+ * body above. `/api/demo/reset` does the equivalent BEGIN/COMMIT/ROLLBACK
+ * itself around its own already-open client — see that route for why it
+ * can't just call this function.
+ */
+async function run(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is not set — see .env.example');
+  }
+
+  // See src/server/db.ts's getPool() for why client_encoding is forced to
+  // UTF8 explicitly rather than left to inherit the machine's locale.
+  const pool = new Pool({ connectionString: databaseUrl, options: '-c client_encoding=UTF8' });
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    await seedDemoData(client);
+    await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -1936,8 +1969,15 @@ async function run(): Promise<void> {
 // Only connect to Postgres and run when this file is executed directly
 // (`tsx scripts/seed-demo.ts` / `npm run seed`) — NOT when it is imported,
 // e.g. by tests/unit/seed-synthetic.test.ts importing the pure builder
-// functions above. That import must never open a database connection.
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+// functions above, or by app/api/demo/reset/route.ts importing
+// `seedDemoData`. Neither import must open a database connection on its
+// own. Compared via `pathToFileURL(...).href` rather than a manual
+// `file://${...}` template: on Windows, `process.argv[1]` is a
+// drive-letter path (`E:\...`) whose correct URL form is
+// `file:///E:/...`, not the naive `file://E:\...` the template produces,
+// so the naive comparison silently never matched on Windows and this
+// entire block never ran there.
+const isMainModule = typeof process.argv[1] === 'string' && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
   run().catch((err) => {
     console.error('seed-demo failed:', err);

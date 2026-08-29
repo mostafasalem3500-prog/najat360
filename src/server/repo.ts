@@ -1059,11 +1059,19 @@ export async function listUnitsWithLastLocation() {
  * triggers — same reasoning as seed-demo.ts's own header comment on this
  * exact point.
  */
-export async function truncateLiveIncidentData(): Promise<void> {
-  const pool = getPool();
-  await pool.query('TRUNCATE TABLE "Incident" CASCADE');
-  await pool.query('TRUNCATE TABLE "H3Prediction"');
-  await pool.query(`UPDATE "AmbulanceUnit" SET status = 'AVAILABLE'`);
+/**
+ * Accepts an optional already-connected `PoolClient` so
+ * app/api/demo/reset/route.ts can run this inside the SAME transaction as
+ * its reseed call (BEGIN ... truncate ... seedDemoData ... COMMIT) — a
+ * reseed failure then rolls the truncate back too, instead of leaving the
+ * demo permanently empty. Falls back to the shared pool (its own
+ * implicit, per-statement transactions) for any other caller.
+ */
+export async function truncateLiveIncidentData(client?: PoolClient): Promise<void> {
+  const db = client ?? getPool();
+  await db.query('TRUNCATE TABLE "Incident" CASCADE');
+  await db.query('TRUNCATE TABLE "H3Prediction"');
+  await db.query(`UPDATE "AmbulanceUnit" SET status = 'AVAILABLE'`);
 }
 
 /** Basic id/code/name lookup for every active Entrance — used by the operations screen to render a human-readable label next to a Recommendation's bare recommendedEntranceId/alternativeEntranceId, same reasoning as listUnitsForDemoPicker() for unit ids. */
@@ -1083,4 +1091,134 @@ export async function listActiveAnchors() {
      WHERE a.active = true ORDER BY e."nameEn" ASC, a.code ASC`
   );
   return result.rows;
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard (SUPERVISOR-only — see app/api/dashboard/metrics/route.ts) — the
+// "all indicators + response time" screen requested after the C1-C6 QA pass.
+// Every number here is derived straight from Incident/IncidentEvent/
+// AmbulanceUnit/H3Prediction rows, not a separately-tracked metrics table,
+// so it can never drift from what /operations and /medic themselves show.
+// ---------------------------------------------------------------------------
+
+export interface DashboardMetrics {
+  totals: {
+    incidents: number;
+    activeIncidents: number;
+    closedToday: number;
+    units: number;
+    availableUnits: number;
+  };
+  incidentsByStatus: { status: string; count: number }[];
+  unitsByStatus: { status: string; count: number }[];
+  responseTime: {
+    /** NEW -> DISPATCHED, averaged over incidents that have reached DISPATCHED at least once. */
+    avgDispatchMinutes: number | null;
+    /** DISPATCHED -> ON_SCENE, averaged over incidents that have reached ON_SCENE. */
+    avgArrivalMinutes: number | null;
+    /** NEW -> CLOSED, averaged over closed incidents — the full end-to-end golden-path duration. */
+    avgResolutionMinutes: number | null;
+    sampleSize: number;
+  };
+  demandCoverage: {
+    h3PredictionCells: number;
+    highDemandCells: number;
+  };
+  recentIncidents: {
+    id: string;
+    rescueCode: string;
+    status: string;
+    priority: string | null;
+    createdAt: string;
+    assignedUnitId: string | null;
+  }[];
+}
+
+export async function getDashboardMetrics(): Promise<DashboardMetrics> {
+  const pool = getPool();
+
+  const [totalsRes, incidentStatusRes, unitStatusRes, responseTimeRes, coverageRes, recentRes] = await Promise.all([
+    pool.query(
+      `SELECT
+         (SELECT count(*) FROM "Incident") AS incidents,
+         (SELECT count(*) FROM "Incident" WHERE status = ANY($1::"IncidentStatus"[])) AS "activeIncidents",
+         (SELECT count(*) FROM "Incident" WHERE status = 'CLOSED' AND "closedAt" >= date_trunc('day', now())) AS "closedToday",
+         (SELECT count(*) FROM "AmbulanceUnit") AS units,
+         (SELECT count(*) FROM "AmbulanceUnit" WHERE status = 'AVAILABLE') AS "availableUnits"`,
+      [OPERATIONAL_STATUSES]
+    ),
+    pool.query(`SELECT status, count(*)::int AS count FROM "Incident" GROUP BY status ORDER BY status ASC`),
+    pool.query(`SELECT status, count(*)::int AS count FROM "AmbulanceUnit" GROUP BY status ORDER BY status ASC`),
+    // Each lateral join picks the FIRST timestamp an incident crossed the
+    // relevant transition — a golden-path incident only ever crosses
+    // DISPATCHED/ON_SCENE once, but FieldLink retries (ACCESS_BLOCKED ->
+    // resume) could otherwise double-count a later re-entry.
+    pool.query(
+      `SELECT
+         avg(EXTRACT(EPOCH FROM (dispatched."createdAt" - i."createdAt")) / 60.0) AS "avgDispatchMinutes",
+         avg(EXTRACT(EPOCH FROM (onscene."createdAt" - dispatched."createdAt")) / 60.0) AS "avgArrivalMinutes",
+         avg(EXTRACT(EPOCH FROM (i."closedAt" - i."createdAt")) / 60.0) AS "avgResolutionMinutes",
+         count(*)::int AS "sampleSize"
+       FROM "Incident" i
+       LEFT JOIN LATERAL (
+         SELECT "createdAt" FROM "IncidentEvent"
+         WHERE "incidentId" = i.id AND "nextStatus" = 'DISPATCHED'
+         ORDER BY "createdAt" ASC LIMIT 1
+       ) dispatched ON true
+       LEFT JOIN LATERAL (
+         SELECT "createdAt" FROM "IncidentEvent"
+         WHERE "incidentId" = i.id AND "eventType" = 'ON_SCENE'
+         ORDER BY "createdAt" ASC LIMIT 1
+       ) onscene ON true
+       WHERE dispatched."createdAt" IS NOT NULL OR i."closedAt" IS NOT NULL`
+    ),
+    // "High demand" = cells the model already says need 2+ recommended
+    // units (recommendedUnits, computed from upperBound in
+    // lib/gis/demand-baseline.ts) — reusing that existing domain
+    // threshold rather than picking an arbitrary cutoff on the raw,
+    // unbounded predictedDemand rate.
+    pool.query(
+      `SELECT count(*)::int AS "h3PredictionCells",
+              count(*) FILTER (WHERE "recommendedUnits" >= 2)::int AS "highDemandCells"
+       FROM "H3Prediction"`
+    ),
+    pool.query(
+      `SELECT id, "rescueCode", status, priority, "createdAt", "assignedUnitId"
+       FROM "Incident" ORDER BY "createdAt" DESC LIMIT 10`
+    ),
+  ]);
+
+  const totals = totalsRes.rows[0];
+  const rt = responseTimeRes.rows[0];
+  const cov = coverageRes.rows[0];
+
+  return {
+    totals: {
+      incidents: Number(totals.incidents),
+      activeIncidents: Number(totals.activeIncidents),
+      closedToday: Number(totals.closedToday),
+      units: Number(totals.units),
+      availableUnits: Number(totals.availableUnits),
+    },
+    incidentsByStatus: incidentStatusRes.rows,
+    unitsByStatus: unitStatusRes.rows,
+    responseTime: {
+      avgDispatchMinutes: rt.avgDispatchMinutes !== null ? Number(rt.avgDispatchMinutes) : null,
+      avgArrivalMinutes: rt.avgArrivalMinutes !== null ? Number(rt.avgArrivalMinutes) : null,
+      avgResolutionMinutes: rt.avgResolutionMinutes !== null ? Number(rt.avgResolutionMinutes) : null,
+      sampleSize: Number(rt.sampleSize),
+    },
+    demandCoverage: {
+      h3PredictionCells: Number(cov.h3PredictionCells),
+      highDemandCells: Number(cov.highDemandCells),
+    },
+    recentIncidents: recentRes.rows.map((r) => ({
+      id: r.id,
+      rescueCode: r.rescueCode,
+      status: r.status,
+      priority: r.priority,
+      createdAt: r.createdAt,
+      assignedUnitId: r.assignedUnitId,
+    })),
+  };
 }

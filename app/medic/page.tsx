@@ -10,6 +10,7 @@
  */
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, ApiError } from '../_lib/api';
+import { onRoleChanged } from '../_lib/role-events';
 
 interface IncidentView {
   id: string;
@@ -70,6 +71,10 @@ export default function MedicPage() {
     apiGet<{ session: { role: string; unitId?: string | null } | null }>('/api/demo-session').then((r) => setSession(r.session));
     apiGet<{ entrances: LookupRow[] }>('/api/entrances').then((r) => setEntrances(r.entrances));
   }, []);
+
+  // Picks up a role switch made from the header's Demo Role Switcher
+  // without needing a manual page reload — see role-events.ts's header.
+  useEffect(() => onRoleChanged((s) => setSession(s)), []);
 
   useEffect(() => {
     if (session?.role === 'MEDIC' && session.unitId) {

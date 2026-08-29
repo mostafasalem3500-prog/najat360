@@ -83,8 +83,21 @@ function CallerScreenInner() {
           `/api/caller/status?incidentId=${encodeURIComponent(session!.incidentId)}&token=${encodeURIComponent(session!.callerToken)}`
         );
         if (!cancelled) setStatus(r.status);
-      } catch {
-        // transient — keep the last known status, retry next tick
+      } catch (e) {
+        // A 404 means the server-side incident this session points at is
+        // gone for good (a demo reset truncated it, or it expired) — not a
+        // transient network blip. Keeping the stale status forever and
+        // silently re-polling a dead incidentId every 5s (the QA report's
+        // Moderate Bug #3) is worse than telling the caller plainly and
+        // letting them start over; any OTHER error (network hiccup, a
+        // momentary 5xx) is still swallowed so the screen doesn't flash an
+        // error on every brief blip.
+        if (!cancelled && e instanceof ApiError && e.status === 404) {
+          localStorage.removeItem(STORAGE_KEY);
+          setSession(null);
+          setStatus(null);
+          setSubmitError('انتهت صلاحية هذا البلاغ التجريبي (على الأرجح بسبب إعادة تعيين العرض التوضيحي). الرجاء إرسال بلاغ جديد.');
+        }
       }
     }
     poll();

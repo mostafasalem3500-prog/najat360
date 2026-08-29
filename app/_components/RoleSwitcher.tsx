@@ -13,6 +13,7 @@
  */
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '../_lib/api';
+import { broadcastRoleChanged } from '../_lib/role-events';
 
 interface DemoSession {
   role: string;
@@ -53,6 +54,7 @@ export default function RoleSwitcher() {
     try {
       const r = await apiPost<{ session: DemoSession }>('/api/demo-session', { role, unitId });
       setSession(r.session);
+      broadcastRoleChanged(r.session);
       if (role !== 'MEDIC') setShowUnitPicker(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'تعذر تبديل الدور');

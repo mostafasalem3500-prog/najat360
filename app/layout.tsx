@@ -31,6 +31,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/anchors" className="text-navy/80 hover:text-cherry">
                 نقاط النجاة (QR)
               </Link>
+              <Link href="/dashboard" className="text-navy/80 hover:text-cherry">
+                لوحة المؤشرات
+              </Link>
             </nav>
             <RoleSwitcher />
           </div>
