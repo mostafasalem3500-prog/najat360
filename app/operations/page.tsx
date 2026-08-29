@@ -21,6 +21,15 @@ import type { MapPoint } from '../_components/IncidentMap';
 /** Leaflet touches window/document, so it can only run client-side — see IncidentMap.tsx's header. */
 const IncidentMap = dynamic(() => import('../_components/IncidentMap'), { ssr: false });
 
+interface PositioningHotspot {
+  h3Index: string;
+  etaSeconds: number;
+  predictedDemand: number;
+  recommendedUnits: number;
+  nearestUnitId: string;
+  reasoning: string[];
+}
+
 interface IncidentRow {
   id: string;
   rescueCode: string;
@@ -145,6 +154,7 @@ export default function OperationsPage() {
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
   const [units, setUnits] = useState<LookupRow[]>([]);
   const [entrances, setEntrances] = useState<LookupRow[]>([]);
+  const [hotspots, setHotspots] = useState<PositioningHotspot[]>([]);
   const [generated, setGenerated] = useState<GenerateResult | null>(null);
   const [chosenUnitId, setChosenUnitId] = useState('');
   const [chosenEntranceId, setChosenEntranceId] = useState('');
@@ -208,6 +218,34 @@ export default function OperationsPage() {
       return () => clearInterval(interval);
     }
   }, [role, loadIncidents]);
+
+  // Positioning hotspots — SUPERVISOR-only, same fleet-wide-not-per-incident
+  // signal as the dashboard's own "توصيات التمركز الاستباقي" section
+  // (lib/gis/repositioning.ts). Reuses /api/dashboard/metrics rather than a
+  // separate endpoint; polled slower than the incidents list (30s, not 8s)
+  // since it involves a routing-matrix computation, not a plain read.
+  useEffect(() => {
+    if (role !== 'SUPERVISOR') {
+      setHotspots([]);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      apiGet<{ positioning: { hotspots: PositioningHotspot[] } }>('/api/dashboard/metrics')
+        .then((r) => {
+          if (!cancelled) setHotspots(r.positioning.hotspots);
+        })
+        .catch(() => {
+          /* best-effort supplementary insight — a failed fetch just leaves the previous list showing */
+        });
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [role]);
 
   useEffect(() => {
     if (selectedId) loadDetail(selectedId);
@@ -307,7 +345,24 @@ export default function OperationsPage() {
   const mapAlternativeUnit = !detail?.incident.assignedUnitId && generated?.alternativeUnitId ? unitPoint(generated.alternativeUnitId) : null;
 
   return (
-    <div className="grid md:grid-cols-3 gap-4">
+    <div className="space-y-4">
+      {role === 'SUPERVISOR' && hotspots.length > 0 && (
+        <div className="card p-3 border-r-4 border-amber-500">
+          <p className="font-bold text-navy text-sm mb-2">
+            توصيات التمركز الاستباقي ({hotspots.length}) — فجوات تغطية بها طلب متوقع، بغض النظر عن البلاغ المحدد حاليًا
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {hotspots.map((h) => (
+              <div key={h.h3Index} className="text-xs bg-amber-50 border border-amber-200 rounded px-2 py-1.5" title={h.reasoning.join(' ')}>
+                <span className="font-mono text-navy/60">{h.h3Index.slice(0, 10)}…</span>{' '}
+                <span className="font-bold text-amber-800">{h.recommendedUnits} وحدة</span>{' '}
+                <span className="text-navy/60">(أقرب: {h.nearestUnitId.slice(0, 8)}, ~{Math.round(h.etaSeconds / 60)} د)</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="grid md:grid-cols-3 gap-4">
       <div className="card p-3 space-y-2 md:col-span-1 max-h-[75vh] overflow-y-auto">
         <h2 className="font-bold text-navy px-1">البلاغات النشطة ({incidents.length})</h2>
         {incidents.map((inc) => (
@@ -516,6 +571,7 @@ export default function OperationsPage() {
             )}
           </>
         )}
+      </div>
       </div>
     </div>
   );
