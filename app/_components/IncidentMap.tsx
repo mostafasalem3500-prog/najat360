@@ -18,13 +18,43 @@
  * operations/page.tsx, since Leaflet touches `window`/`document` and this
  * app has no other client-only-widget precedent to follow.
  *
- * Tiles: OpenStreetMap's public tile server — free, no API key, suitable
- * for a demo. A production deployment should point at a paid/rate-limited
- * tile provider per OSM's tile usage policy; see the idea doc's data-
- * governance section for why this stays desk/demo-scale only for now.
+ * Tiles: two selectable basemaps, both raster (plain `L.tileLayer`, no new
+ * dependency): OpenStreetMap's public tile server (default — free, no API
+ * key) and Esri/ArcGIS's public "World Imagery" satellite tile service
+ * (also free, no API key required for this classic REST endpoint — see
+ * BASEMAPS below). If `NEXT_PUBLIC_ARCGIS_API_KEY` is set, it's appended
+ * as a `token` query param on the ArcGIS layer for a paid ArcGIS Developer
+ * plan's higher rate limits / authenticated basemap styles; it is NEVER
+ * required for the satellite layer to work — a demo deployment with no
+ * key still gets working satellite imagery. A production deployment
+ * beyond demo scale should still review both providers' tile usage
+ * policies; see the idea doc's data-governance section.
  */
-import { useEffect, useRef } from 'react';
-import type { Map as LeafletMap, LayerGroup } from 'leaflet';
+import { useEffect, useRef, useState } from 'react';
+import type { Map as LeafletMap, LayerGroup, TileLayer } from 'leaflet';
+
+type BasemapId = 'osm' | 'arcgis';
+
+const BASEMAPS: Record<BasemapId, { label: string; url: string; attribution: string; maxZoom: number }> = {
+  osm: {
+    label: 'خريطة الشوارع',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
+    maxZoom: 19,
+  },
+  arcgis: {
+    label: 'صور الأقمار الصناعية (Esri)',
+    // Esri's classic public World Imagery REST tile service — no API key
+    // needed for this endpoint. `NEXT_PUBLIC_ARCGIS_API_KEY`, if set, is
+    // appended as a token for accounts that want the higher-rate-limit
+    // authenticated tier; omitted entirely otherwise.
+    url:
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' +
+      (process.env.NEXT_PUBLIC_ARCGIS_API_KEY ? `?token=${process.env.NEXT_PUBLIC_ARCGIS_API_KEY}` : ''),
+    attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+    maxZoom: 19,
+  },
+};
 
 export interface MapObservation {
   id: string;
@@ -54,6 +84,8 @@ export default function IncidentMap({ incident, observations = [], unit, alterna
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
   const layerRef = useRef<LayerGroup | null>(null);
+  const tileLayerRef = useRef<TileLayer | null>(null);
+  const [basemap, setBasemap] = useState<BasemapId>('osm');
 
   useEffect(() => {
     let cancelled = false;
@@ -63,12 +95,17 @@ export default function IncidentMap({ incident, observations = [], unit, alterna
 
       if (!mapRef.current) {
         mapRef.current = L.map(containerRef.current, { attributionControl: true }).setView(RIYADH_FALLBACK, 13);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          maxZoom: 19,
-          attribution: '&copy; OpenStreetMap contributors',
-        }).addTo(mapRef.current);
       }
       const map = mapRef.current;
+
+      const cfg = BASEMAPS[basemap];
+      if (!tileLayerRef.current) {
+        tileLayerRef.current = L.tileLayer(cfg.url, { maxZoom: cfg.maxZoom, attribution: cfg.attribution }).addTo(map);
+      } else if (tileLayerRef.current.options.attribution !== cfg.attribution) {
+        // basemap switched — swap tiles rather than restyling the same layer
+        tileLayerRef.current.remove();
+        tileLayerRef.current = L.tileLayer(cfg.url, { maxZoom: cfg.maxZoom, attribution: cfg.attribution }).addTo(map);
+      }
 
       if (layerRef.current) layerRef.current.clearLayers();
       else layerRef.current = L.layerGroup().addTo(map);
@@ -141,7 +178,7 @@ export default function IncidentMap({ incident, observations = [], unit, alterna
     return () => {
       cancelled = true;
     };
-  }, [incident.latitude, incident.longitude, incident.uncertaintyRadiusMeters, JSON.stringify(observations), unit?.latitude, unit?.longitude, alternativeUnit?.latitude, entrance?.latitude]);
+  }, [incident.latitude, incident.longitude, incident.uncertaintyRadiusMeters, JSON.stringify(observations), unit?.latitude, unit?.longitude, alternativeUnit?.latitude, entrance?.latitude, basemap]);
 
   useEffect(
     () => () => {
@@ -151,5 +188,23 @@ export default function IncidentMap({ incident, observations = [], unit, alterna
     []
   );
 
-  return <div ref={containerRef} className="w-full h-80 rounded border border-navy/10" />;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-end gap-1">
+        {(Object.keys(BASEMAPS) as BasemapId[]).map((id) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setBasemap(id)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+              basemap === id ? 'bg-navy text-white' : 'bg-navy/5 text-navy hover:bg-navy/10'
+            }`}
+          >
+            {BASEMAPS[id].label}
+          </button>
+        ))}
+      </div>
+      <div ref={containerRef} className="w-full h-80 rounded border border-navy/10" />
+    </div>
+  );
 }
