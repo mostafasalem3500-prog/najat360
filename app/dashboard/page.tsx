@@ -10,7 +10,7 @@
  * for why there is no separate metrics table to fall out of sync.
  */
 import { useEffect, useState } from 'react';
-import { apiGet, ApiError } from '../_lib/api';
+import { apiGet, apiPost, ApiError } from '../_lib/api';
 import { onRoleChanged } from '../_lib/role-events';
 
 interface DashboardMetrics {
@@ -61,6 +61,28 @@ interface DashboardMetrics {
   }[];
 }
 
+interface RepositionPlan {
+  status: 'RECOMMENDED' | 'ABSTAINED';
+  recommendation: {
+    unitId: string;
+    targetH3Index: string;
+    relocationDistanceMeters: number;
+    expectedGainSeconds: number;
+    before: { meanEtaSeconds: number; gapCellCount: number };
+    after: { meanEtaSeconds: number; gapCellCount: number };
+    reasoning: string[];
+  } | null;
+  evaluatedCandidates: number;
+  abstentionReasons: string[];
+}
+
+const ABSTENTION_REASON_LABELS_AR: Record<string, string> = {
+  INSUFFICIENT_AVAILABLE_UNITS: 'عدد الوحدات المتاحة أقل من اثنتين.',
+  NO_COVERAGE_CELLS: 'لا توجد خلايا تغطية محسوبة حاليًا.',
+  NO_DEMAND_HOTSPOTS: 'لا توجد خلايا لها طلب متوقع كافٍ حاليًا.',
+  NO_SAFE_MATERIAL_GAIN: 'لا توجد نقلة آمنة تحقق تحسنًا يستحق الاقتراح حاليًا.',
+};
+
 const INCIDENT_STATUS_LABELS_AR: Record<string, string> = {
   NEW: 'جديد',
   VERIFYING: 'قيد تثبيت الموقع',
@@ -104,6 +126,20 @@ export default function DashboardPage() {
   const [role, setRole] = useState<string | null | undefined>(undefined);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [repositionPlan, setRepositionPlan] = useState<RepositionPlan | null>(null);
+  const [repositionLoading, setRepositionLoading] = useState(false);
+
+  async function requestRepositioningSuggestion() {
+    setRepositionLoading(true);
+    try {
+      const r = await apiPost<{ plan: RepositionPlan | null }>('/api/dashboard/positioning/optimize');
+      setRepositionPlan(r.plan);
+    } catch (e) {
+      if (e instanceof ApiError) setError(e.message);
+    } finally {
+      setRepositionLoading(false);
+    }
+  }
 
   useEffect(() => {
     apiGet<{ session: { role: string } | null }>('/api/demo-session').then((r) => setRole(r.session?.role ?? null));
@@ -284,6 +320,45 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
+
+        <div className="mt-4 pt-4 border-t border-navy/10">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-bold text-navy text-sm">اقتراح نقلة تمركز واحدة</h3>
+            <button
+              onClick={requestRepositioningSuggestion}
+              disabled={repositionLoading}
+              className="text-xs font-medium rounded-full bg-cherry/10 text-cherry px-3 py-1 hover:bg-cherry/20 transition disabled:opacity-50"
+            >
+              {repositionLoading ? 'جارٍ الحساب…' : 'اقترح نقلة الآن'}
+            </button>
+          </div>
+          <p className="text-navy/50 text-xs mb-2">
+            يحاكي نقل وحدة واحدة فقط إلى إحدى نقاط الطلب أعلاه، ويقترحها فقط إذا أثبتت المحاكاة تحسنًا حقيقيًا وآمنًا — لا ينفَّذ أي نقل تلقائيًا.
+          </p>
+          {repositionPlan && repositionPlan.status === 'RECOMMENDED' && repositionPlan.recommendation && (
+            <div className="card p-4 border-r-4 border-cherry">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-bold text-navy text-sm">
+                  نقل الوحدة {repositionPlan.recommendation.unitId.slice(0, 8)} إلى {repositionPlan.recommendation.targetH3Index.slice(0, 10)}…
+                </span>
+                <span className="text-xs font-bold text-cherry">
+                  مسافة {Math.round(repositionPlan.recommendation.relocationDistanceMeters / 100) / 10} كم
+                </span>
+              </div>
+              {repositionPlan.recommendation.reasoning.map((line, i) => (
+                <p key={i} className="text-sm text-navy/80">
+                  {line}
+                </p>
+              ))}
+            </div>
+          )}
+          {repositionPlan && repositionPlan.status === 'ABSTAINED' && (
+            <div className="card p-4 text-navy/60 text-sm">
+              لا يوجد اقتراح آمن حاليًا:{' '}
+              {repositionPlan.abstentionReasons.map((r) => ABSTENTION_REASON_LABELS_AR[r] ?? r).join(' ')}
+            </div>
+          )}
+        </div>
       </section>
 
       <section>

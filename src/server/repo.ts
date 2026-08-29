@@ -57,7 +57,14 @@ import { submitFieldAction, type ExistingFieldActionRef } from '@/lib/fieldlink/
 import { getRoutingProvider } from '@/lib/routing/get-provider';
 import { latLngToH3Cell, h3CellToLatLng, h3GridDisk } from '@/lib/gis/h3';
 import { computeCoverageMetrics, type CoverageCellInput } from '@/lib/gis/coverage';
-import { computeRepositioningHotspots, type AreaDemand, type RepositioningHotspot } from '@/lib/gis/repositioning';
+import {
+  computeRepositioningHotspots,
+  optimizeRepositioning,
+  type AreaDemand,
+  type OptimizeRepositioningUnit,
+  type RepositionPlan,
+  type RepositioningHotspot,
+} from '@/lib/gis/repositioning';
 import { buildExportMetadata, buildIncidentExportCsv } from '@/lib/export/csv';
 import type {
   FieldActionType,
@@ -1501,4 +1508,50 @@ export async function exportLocationAccuracyReportCsv(actorId: string, now: Date
   });
 
   return csv;
+}
+
+/**
+ * On-demand — NOT part of getDashboardMetrics()'s poll, because
+ * optimizeRepositioning() runs a handful of real computeCoverageMetrics()
+ * simulations (each a routing-matrix call) per invocation; doing that
+ * every 8-30s alongside the rest of the dashboard would be wasteful for a
+ * feature a supervisor consults occasionally, not continuously. Fetches
+ * the SAME live units/cells/demand inputs getDashboardMetrics()'s
+ * `positioning` section uses, then asks optimizeRepositioning() for one
+ * concrete "move this unit here" candidate instead of just the hotspot
+ * list. Returns null (not an error) when there is nothing to evaluate yet
+ * (no available units, or no cells) — a real ABSTAINED plan for every
+ * other "nothing safe to recommend" case still comes back normally so the
+ * UI can show the reason.
+ */
+export async function getRepositioningPlan(): Promise<RepositionPlan | null> {
+  const pool = getPool();
+  const unitsRes = await pool.query(
+    `SELECT u.id, ul.latitude, ul.longitude
+     FROM "AmbulanceUnit" u
+     JOIN LATERAL (
+       SELECT latitude, longitude FROM "UnitLocation" WHERE "unitId" = u.id ORDER BY "capturedAt" DESC LIMIT 1
+     ) ul ON true
+     WHERE u.status = 'AVAILABLE'`
+  );
+  const units: OptimizeRepositioningUnit[] = unitsRes.rows.map((u) => ({
+    id: u.id as string,
+    location: { latitude: Number(u.latitude), longitude: Number(u.longitude) },
+  }));
+  const cells = buildLiveCoverageGridCells();
+  if (units.length === 0 || cells.length === 0) return null;
+
+  const demandRes = await pool.query(
+    `SELECT DISTINCT ON ("h3Index") "h3Index", "predictedDemand", "recommendedUnits"
+     FROM "H3Prediction"
+     WHERE "h3Index" = ANY($1::text[]) AND "windowStart" <= now()
+     ORDER BY "h3Index", "windowStart" DESC`,
+    [cells.map((c) => c.h3Index)]
+  );
+  const demandByCell: Record<string, AreaDemand> = {};
+  for (const row of demandRes.rows) {
+    demandByCell[row.h3Index as string] = { predictedDemand: Number(row.predictedDemand), recommendedUnits: Number(row.recommendedUnits) };
+  }
+
+  return optimizeRepositioning({ cells, units, demandByCell, routingProvider: getRoutingProvider() });
 }
