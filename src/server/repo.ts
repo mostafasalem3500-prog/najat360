@@ -1450,3 +1450,55 @@ export async function exportPositioningReportCsv(actorId: string, now: Date = ne
 
   return csv;
 }
+
+/** Row cap for the location-accuracy report — a raw per-resolution export, unlike the dashboard's own aggregated byBand counts. 1000 keeps a demo/hackathon-scale export well under any spreadsheet-opening friction while still being "the real underlying rows", not just the summary already visible on screen. */
+const LOCATION_ACCURACY_REPORT_ROW_LIMIT = 1000;
+
+/**
+ * Builds the "تقرير دقة تحديد الموقع" (location accuracy report) CSV —
+ * one row per LocationResolution (not just the dashboard's aggregated
+ * counts), so a supervisor can hand this to someone auditing individual
+ * cases. Same metadata/AuditLog discipline as
+ * exportPositioningReportCsv() above.
+ */
+export async function exportLocationAccuracyReportCsv(actorId: string, now: Date = new Date()): Promise<string> {
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT lr.id, lr."incidentId", i."rescueCode", lr."confidenceIndex",
+            CASE WHEN lr."confidenceIndex" >= 80 THEN 'HIGH'
+                 WHEN lr."confidenceIndex" >= 60 THEN 'MEDIUM'
+                 ELSE 'LOW' END AS band,
+            jsonb_array_length(lr."conflictingObservationIds") > 0 AS "hasConflict",
+            lr."algorithmVersion", lr."createdAt"
+     FROM "LocationResolution" lr
+     JOIN "Incident" i ON i.id = lr."incidentId"
+     ORDER BY lr."createdAt" DESC
+     LIMIT $1`,
+    [LOCATION_ACCURACY_REPORT_ROW_LIMIT]
+  );
+
+  const rows = result.rows.map((r) => ({
+    id: r.id,
+    incidentId: r.incidentId,
+    rescueCode: r.rescueCode,
+    confidenceIndex: Number(r.confidenceIndex),
+    band: r.band,
+    hasConflict: r.hasConflict,
+    algorithmVersion: r.algorithmVersion,
+    createdAt: r.createdAt,
+  }));
+  const metadata = buildExportMetadata({ report: 'location-accuracy', rowLimit: LOCATION_ACCURACY_REPORT_ROW_LIMIT }, now);
+  const csv = buildIncidentExportCsv(rows, metadata);
+
+  await withTransaction(async (client) => {
+    await insertAuditLog(client, {
+      actorId,
+      action: 'EXPORT_LOCATION_ACCURACY_REPORT',
+      entityType: 'DashboardReport',
+      entityId: 'location-accuracy',
+      after: { rowCount: rows.length },
+    });
+  });
+
+  return csv;
+}

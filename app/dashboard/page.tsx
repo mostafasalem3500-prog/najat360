@@ -209,7 +209,15 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-lg font-bold text-navy mb-2">دقة تحديد الموقع</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-bold text-navy">دقة تحديد الموقع</h2>
+          <a
+            href="/api/dashboard/export/location-accuracy"
+            className="text-xs font-medium rounded-full bg-navy/5 text-navy px-3 py-1 hover:bg-navy/10 transition"
+          >
+            تصدير CSV
+          </a>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="grid grid-cols-2 gap-3">
             <StatCard
