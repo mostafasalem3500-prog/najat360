@@ -54,7 +54,7 @@ import { DISPATCH_SCORE_VERSION } from '@/lib/dispatch/dispatch-score';
 import type { UnitCandidateInput, EntranceCandidateInput } from '@/lib/dispatch/generate-recommendation';
 import { decideDispatch, type FreshUnitStatus } from '@/lib/dispatch/decision';
 import { submitFieldAction, type ExistingFieldActionRef } from '@/lib/fieldlink/field-action';
-import { MockRoutingProvider } from '@/lib/routing/mock-provider';
+import { getRoutingProvider } from '@/lib/routing/get-provider';
 import { latLngToH3Cell, h3CellToLatLng, h3GridDisk } from '@/lib/gis/h3';
 import { computeCoverageMetrics, type CoverageCellInput } from '@/lib/gis/coverage';
 import { computeRepositioningHotspots, type AreaDemand, type RepositioningHotspot } from '@/lib/gis/repositioning';
@@ -793,7 +793,7 @@ export async function generateRecommendationForIncident(incidentId: string, now:
     ]);
     if (availableUnits.length === 0) throw new NoAvailableUnitsForRecommendationError(incidentId);
 
-    const routingProvider = new MockRoutingProvider(() => now);
+    const routingProvider = getRoutingProvider(() => now);
     const result = await generateCoverageAwareRecommendation({
       incidentId,
       locationConfidenceIndex: incident.confidenceScore ?? 50,
@@ -1341,7 +1341,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     const cells = buildLiveCoverageGridCells();
 
     if (units.length > 0 && cells.length > 0) {
-      const coverageMetrics = await computeCoverageMetrics({ cells, units, routingProvider: new MockRoutingProvider() });
+      const coverageMetrics = await computeCoverageMetrics({ cells, units, routingProvider: getRoutingProvider() });
 
       const demandRes = await pool.query(
         `SELECT DISTINCT ON ("h3Index") "h3Index", "predictedDemand", "recommendedUnits"
